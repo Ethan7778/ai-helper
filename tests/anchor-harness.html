@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Anchor offset harness</title>
+    <style>
+      body {
+        font-family: Georgia, "Times New Roman", serif;
+        max-width: 720px;
+        margin: 40px auto;
+        padding: 0 16px;
+        line-height: 1.6;
+        color: #222;
+      }
+      h1 {
+        font-size: 1.4rem;
+      }
+      .message {
+        border: 1px solid #ddd;
+        padding: 16px;
+        border-radius: 8px;
+        background: #fafafa;
+      }
+      .message mark {
+        background: #ffe566;
+        padding: 0 1px;
+        cursor: pointer;
+      }
+      #log {
+        margin-top: 20px;
+        font-family: ui-monospace, Consolas, monospace;
+        font-size: 12px;
+        white-space: pre-wrap;
+        background: #111;
+        color: #9f9;
+        padding: 12px;
+        border-radius: 6px;
+        min-height: 80px;
+      }
+      #ask-btn {
+        position: fixed;
+        z-index: 1000;
+        padding: 6px 10px;
+        font-size: 12px;
+        font-family: system-ui, sans-serif;
+        border: 1px solid #ccc;
+        border-radius: 6px;
+        background: #fff;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+        cursor: pointer;
+        display: none;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Anchor offset harness</h1>
+    <p>
+      Select text in the fake AI message below. An “Ask about this” button
+      should appear; clicking it records offsets and re-renders a
+      <code>&lt;mark&gt;</code> from those offsets (no live Range stored).
+    </p>
+
+    <div class="message" id="message" data-message-id="msg-1">
+      Photosynthesis converts light energy into chemical energy. In the light
+      reactions, chlorophyll absorbs photons and splits water, releasing oxygen.
+      The Calvin cycle then uses ATP and NADPH to fix carbon dioxide into sugars.
+      Without sufficient light, the light-dependent reactions slow and the plant
+      cannot regenerate the reducing power needed for carbon fixation.
+    </div>
+
+    <button type="button" id="ask-btn">Ask about this</button>
+    <div id="log">Ready. Select some text…</div>
+
+    <script type="module">
+      // Inline copies of the core offset helpers so this page runs without
+      // a bundler or Chrome extension APIs.
+
+      function getTextOffset(root, node, offset) {
+        const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+        let total = 0;
+        let current = walker.nextNode();
+        while (current) {
+          if (current === node) return total + offset;
+          total += (current.textContent ?? "").length;
+          current = walker.nextNode();
+        }
+        if (root.contains(node)) {
+          try {
+            const range = document.createRange();
+            range.selectNodeContents(root);
+            range.setEnd(node, offset);
+            return range.toString().length;
+          } catch {
+            return total;
+          }
+        }
+        return -1;
+      }
+
+      function getPlainText(root) {
+        const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+        let text = "";
+        let current = walker.nextNode();
+        while (current) {
+          text += current.textContent ?? "";
+          current = walker.nextNode();
+        }
+        return text;
+      }
+
+      function escapeHtml(s) {
+        return s
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;");
+      }
+
+      function renderWithHighlights(rawText, threads) {
+        const sorted = [...threads].sort((a, b) => a.anchorStart - b.anchorStart);
+        const kept = [];
+        let lastEnd = -1;
+        for (const t of sorted) {
+          if (t.anchorStart < lastEnd) continue;
+          kept.push(t);
+          lastEnd = t.anchorEnd;
+        }
+        let html = "";
+        let cursor = 0;
+        for (const t of kept) {
+          if (cursor < t.anchorStart) {
+            html += escapeHtml(rawText.slice(cursor, t.anchorStart));
+          }
+          html += `<mark data-thread-id="${t.id}">${escapeHtml(
+            rawText.slice(t.anchorStart, t.anchorEnd)
+          )}</mark>`;
+          cursor = t.anchorEnd;
+        }
+        if (cursor < rawText.length) html += escapeHtml(rawText.slice(cursor));
+        return html;
+      }
+
+      const message = document.getElementById("message");
+      const askBtn = document.getElementById("ask-btn");
+      const log = document.getElementById("log");
+      const threads = [];
+      let pending = null;
+
+      // Capture original text once (before any mark injection).
+      const rawText = getPlainText(message);
+      message.dataset.aiHelperRaw = rawText;
+
+      function logLine(msg) {
+        log.textContent = msg;
+      }
+
+      function rerender() {
+        message.innerHTML = renderWithHighlights(
+          message.dataset.aiHelperRaw,
+          threads
+        );
+      }
+
+      document.addEventListener("mouseup", () => {
+        setTimeout(() => {
+          const sel = window.getSelection();
+          if (!sel || sel.isCollapsed || sel.rangeCount === 0) {
+            askBtn.style.display = "none";
+            pending = null;
+            return;
+          }
+          const range = sel.getRangeAt(0);
+          if (
+            !message.contains(range.startContainer) ||
+            !message.contains(range.endContainer)
+          ) {
+            askBtn.style.display = "none";
+            pending = null;
+            return;
+          }
+          const start = getTextOffset(
+            message,
+            range.startContainer,
+            range.startOffset
+          );
+          const end = getTextOffset(
+            message,
+            range.endContainer,
+            range.endOffset
+          );
+          const quotedText = range.toString();
+          if (start < 0 || end <= start || !quotedText.trim()) {
+            askBtn.style.display = "none";
+            pending = null;
+            return;
+          }
+          pending = { start, end, quotedText };
+          const rect = range.getBoundingClientRect();
+          askBtn.style.display = "block";
+          askBtn.style.top = `${Math.max(8, rect.top - 36)}px`;
+          askBtn.style.left = `${Math.max(8, rect.left)}px`;
+          logLine(
+            `Selection offsets: [${start}, ${end})\nQuoted: "${quotedText}"`
+          );
+        }, 10);
+      });
+
+      askBtn.addEventListener("mousedown", (e) => e.preventDefault());
+      askBtn.addEventListener("click", () => {
+        if (!pending) return;
+        const id = `t-${threads.length + 1}`;
+        threads.push({
+          id,
+          anchorStart: pending.start,
+          anchorEnd: pending.end,
+        });
+        logLine(
+          `Created thread ${id} at [${pending.start}, ${pending.end})\n` +
+            `Stored offsets only — re-rendering marks from raw text.\n` +
+            `Threads: ${JSON.stringify(threads, null, 2)}`
+        );
+        pending = null;
+        askBtn.style.display = "none";
+        window.getSelection()?.removeAllRanges();
+        rerender();
+      });
+
+      message.addEventListener("click", (e) => {
+        const mark = e.target.closest("mark[data-thread-id]");
+        if (!mark) return;
+        logLine(`Clicked mark → thread ${mark.dataset.threadId}`);
+      });
+    </script>
+  </body>
+</html>

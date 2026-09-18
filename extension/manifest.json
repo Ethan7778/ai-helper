@@ -1,0 +1,17 @@
+{
+  "manifest_version": 3,
+  "name": "AI Helper — Highlight to Thread",
+  "version": "0.1.0",
+  "description": "Highlight text in AI responses and ask follow-ups in a sidebar thread without polluting the main chat.",
+  "permissions": ["storage", "activeTab"],
+  "background": {
+    "service_worker": "service-worker.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://chatgpt.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
