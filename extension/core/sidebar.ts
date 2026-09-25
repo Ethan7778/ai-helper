@@ -7,10 +7,10 @@ const HOST_ID = "ai-helper-sidebar-host";
 
 export interface SidebarCallbacks {
   onFocusThread: (threadId: string) => void;
-  onCloseThread: (threadId: string) => void;
   onSend: (
     thread: Thread,
-    question: string
+    question: string,
+    onPartial?: (text: string) => void
   ) => Promise<{ ok: boolean; reply?: string; error?: string }>;
 }
 
@@ -135,15 +135,25 @@ const STYLES = `
   border: none;
   background: transparent;
   color: #888;
-  font-size: 16px;
+  font-size: 14px;
   line-height: 1;
-  padding: 2px 4px;
+  padding: 2px 6px;
   cursor: pointer;
   border-radius: 4px;
 }
 .close-btn:hover {
   background: #eee;
   color: #333;
+}
+.reply.streaming .body::after {
+  content: "|";
+  display: inline-block;
+  margin-left: 1px;
+  animation: blink 1s step-end infinite;
+  color: #888;
+}
+@keyframes blink {
+  50% { opacity: 0; }
 }
 .quote {
   font-style: italic;
@@ -275,6 +285,29 @@ export class Sidebar {
     card?.scrollIntoView({ behavior: "smooth", block: "nearest" });
   }
 
+  /** Update the in-flight assistant bubble without rebuilding the whole list. */
+  patchAssistantReply(threadId: string, text: string): void {
+    const card = this.shadow.querySelector(
+      `[data-thread-id="${CSS.escape(threadId)}"]`
+    );
+    if (!card) return;
+    const replies = card.querySelector(".replies");
+    if (!replies) return;
+
+    let live = replies.querySelector(
+      ".reply.assistant.streaming"
+    ) as HTMLElement | null;
+    if (!live) {
+      live = document.createElement("div");
+      live.className = "reply assistant streaming";
+      live.innerHTML = `<div class="role">assistant</div><div class="body"></div>`;
+      replies.appendChild(live);
+    }
+    const body = live.querySelector(".body");
+    if (body) body.innerHTML = formatReplyHtml(text) || "&nbsp;";
+    replies.scrollTop = replies.scrollHeight;
+  }
+
   private setCollapsed(collapsed: boolean): void {
     this.collapsed = collapsed;
     this.panel.classList.toggle("collapsed", collapsed);
@@ -355,22 +388,31 @@ export class Sidebar {
       this.renderList();
     });
 
-    const closeBtn = document.createElement("button");
-    closeBtn.type = "button";
-    closeBtn.className = "close-btn";
-    closeBtn.title = "Close thread";
-    closeBtn.setAttribute("aria-label", "Close thread");
-    closeBtn.textContent = "×";
-    closeBtn.addEventListener("click", (e) => {
+    const collapseBtn = document.createElement("button");
+    collapseBtn.type = "button";
+    collapseBtn.className = "close-btn";
+    const isExpanded = this.expanded.has(thread.id);
+    collapseBtn.title = isExpanded ? "Collapse thread" : "Expand thread";
+    collapseBtn.setAttribute(
+      "aria-label",
+      isExpanded ? "Collapse thread" : "Expand thread"
+    );
+    collapseBtn.textContent = isExpanded ? "▾" : "▸";
+    collapseBtn.addEventListener("click", (e) => {
       e.preventDefault();
       e.stopPropagation();
-      this.expanded.delete(thread.id);
-      if (this.activeId === thread.id) this.activeId = null;
-      this.callbacks.onCloseThread(thread.id);
+      if (this.expanded.has(thread.id)) {
+        this.expanded.delete(thread.id);
+      } else {
+        this.expanded.add(thread.id);
+        this.activeId = thread.id;
+        this.callbacks.onFocusThread(thread.id);
+      }
+      this.renderList();
     });
 
     header.appendChild(main);
-    header.appendChild(closeBtn);
+    header.appendChild(collapseBtn);
     card.appendChild(header);
 
     const body = document.createElement("div");
@@ -405,7 +447,11 @@ export class Sidebar {
       send.disabled = true;
       status.textContent = "";
       try {
-        const result = await this.callbacks.onSend(thread, question);
+        const result = await this.callbacks.onSend(
+          thread,
+          question,
+          (partial) => this.patchAssistantReply(thread.id, partial)
+        );
         if (!result.ok) {
           status.textContent = result.error || "Request failed";
         } else {
@@ -415,7 +461,6 @@ export class Sidebar {
         status.textContent = err instanceof Error ? err.message : String(err);
       } finally {
         send.disabled = false;
-        // Thread may have been closed while the request was in flight.
         if (this.threads.some((t) => t.id === thread.id)) {
           this.renderList();
           this.focusThread(thread.id);
@@ -458,7 +503,8 @@ function escapeHtml(s: string): string {
  * finishes. Other sites can still route through the service worker later.
  */
 export async function sendAskFollowUp(
-  payload: Omit<AskFollowUpRequest, "type">
+  payload: Omit<AskFollowUpRequest, "type">,
+  onPartial?: (text: string) => void
 ): Promise<AskFollowUpResponse> {
   const message: AskFollowUpRequest = { type: "ask-follow-up", ...payload };
 
@@ -468,7 +514,7 @@ export async function sendAskFollowUp(
         "[ai-helper][chatgpt-session] Completing follow-up in page (direct path)"
       );
       const creds = await fetchAccessTokenFromPage();
-      return await completeViaChatGptSession(creds, message);
+      return await completeViaChatGptSession(creds, message, onPartial);
     } catch (err) {
       const error = err instanceof Error ? err.message : String(err);
       console.error("[ai-helper][chatgpt-session] complete failed:", error);

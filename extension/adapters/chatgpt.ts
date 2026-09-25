@@ -6,12 +6,16 @@ const ASSISTANT_SELECTORS = [
   '[data-turn="assistant"]',
   'article[data-turn-role="assistant"]',
   '[data-testid="assistant-message"]',
+  '[data-testid*="assistant"]',
+  'div[class*="agent-turn"]',
 ];
 const USER_SELECTORS = [
   '[data-message-author-role="user"]',
   '[data-turn="user"]',
   'article[data-turn-role="user"]',
 ];
+const MESSAGE_CONTENT_SELECTORS =
+  ".markdown, .prose, [class*='markdown'], [class*='prose'], .whitespace-pre-wrap";
 const STOP_BUTTON_SELECTORS = [
   'button[aria-label="Stop generating"]',
   'button[aria-label*="Stop"]',
@@ -143,9 +147,7 @@ export function createChatGptAdapter(): SiteAdapter {
 
       return turns.map((turn) => {
         const content =
-          turn.querySelector<HTMLElement>(
-            ".markdown, .prose, [class*='markdown']"
-          ) ?? turn;
+          turn.querySelector<HTMLElement>(MESSAGE_CONTENT_SELECTORS) ?? turn;
         return content;
       });
     },

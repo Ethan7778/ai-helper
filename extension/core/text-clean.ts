@@ -45,6 +45,10 @@ export function formatReplyHtml(text: string): string {
   const cleaned = cleanChatGptText(text);
   let html = escapeHtml(cleaned);
 
+  // Headings / blockquotes on real newlines first
+  html = html.replace(/(^|\n)#{1,6}\s+/g, "$1");
+  html = html.replace(/(^|\n)&gt;\s?/g, "$1");
+
   // **bold**
   html = html.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
   // *italic* (avoid matching bold leftovers)

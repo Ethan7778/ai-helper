@@ -2,7 +2,6 @@ import {
   applyHighlightsToElement,
   attachSelectionHandler,
   getPlainText,
-  unwrapHighlights,
   type SelectionAnchor,
 } from "./anchor";
 import { Sidebar, sendAskFollowUp } from "./sidebar";
@@ -99,37 +98,6 @@ export async function bootEngine(adapter: SiteAdapter): Promise<() => void> {
     bindMarkClicks();
   };
 
-  const removeThread = async (threadId: string) => {
-    const removed = threads.find((t) => t.id === threadId);
-    if (!removed) return { ok: true as const };
-    const previous = threads;
-    threads = threads.filter((t) => t.id !== threadId);
-    try {
-      await persist();
-    } catch (err) {
-      threads = previous;
-      sidebar.setThreads(threads);
-      return {
-        ok: false as const,
-        error: err instanceof Error ? err.message : String(err),
-      };
-    }
-    sidebar.setThreads(threads);
-    const el = messageEls.get(removed.messageId);
-    if (el) {
-      const remaining = threads.filter((t) => t.messageId === removed.messageId);
-      if (remaining.length === 0) {
-        unwrapHighlights(el);
-      } else {
-        applyHighlightsToElement(el, remaining);
-        bindMarkClicks();
-      }
-    } else {
-      refreshHighlights();
-    }
-    return { ok: true as const };
-  };
-
   const sidebar = new Sidebar({
     onFocusThread: (threadId) => {
       const mark = document.querySelector(
@@ -143,10 +111,7 @@ export async function bootEngine(adapter: SiteAdapter): Promise<() => void> {
         }, 1200);
       }
     },
-    onCloseThread: (threadId) => {
-      void removeThread(threadId);
-    },
-    onSend: async (thread, question) => {
+    onSend: async (thread, question, onPartial) => {
       if (!isExtensionAlive()) {
         markDead();
         return { ok: false, error: EXTENSION_RELOAD_MSG };
@@ -171,18 +136,22 @@ export async function bootEngine(adapter: SiteAdapter): Promise<() => void> {
         };
       }
       sidebar.setThreads(threads);
+      sidebar.focusThread(thread.id);
 
-      const result = await sendAskFollowUp({
-        siteId: adapter.siteId,
-        quotedText: current.quotedText,
-        surroundingContext: surroundingContext(current),
-        conversationExcerpt: conversationExcerpt(),
-        question,
-        messageId: current.messageId,
-        threadId: current.id,
-        sideConversationId: current.sideConversationId,
-        sideParentMessageId: current.sideParentMessageId,
-      });
+      const result = await sendAskFollowUp(
+        {
+          siteId: adapter.siteId,
+          quotedText: current.quotedText,
+          surroundingContext: surroundingContext(current),
+          conversationExcerpt: conversationExcerpt(),
+          question,
+          messageId: current.messageId,
+          threadId: current.id,
+          sideConversationId: current.sideConversationId,
+          sideParentMessageId: current.sideParentMessageId,
+        },
+        onPartial
+      );
 
       if (result.ok && result.reply) {
         const i = threads.findIndex((t) => t.id === thread.id);

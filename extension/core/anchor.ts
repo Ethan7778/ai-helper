@@ -140,6 +140,8 @@ export interface SelectionAnchor {
 /**
  * If the current window selection lies entirely inside one of the given
  * message roots, return its character offsets and bounding rect.
+ * Also recovers when ChatGPT wraps the selection in a slightly different node
+ * than our registered markdown root (walk up to an assistant turn).
  */
 export function getSelectionAnchor(
   messageRoots: HTMLElement[]
@@ -150,14 +152,25 @@ export function getSelectionAnchor(
   }
 
   const range = sel.getRangeAt(0);
-  const { startContainer, startOffset, endContainer, endOffset } = range;
+  const { startContainer, endContainer } = range;
+  const startOffset = range.startOffset;
+  const endOffset = range.endOffset;
 
-  const messageRoot = messageRoots.find(
-    (root) =>
-      root.contains(startContainer) && root.contains(endContainer)
-  );
+  let messageRoot =
+    messageRoots.find(
+      (root) =>
+        root.contains(startContainer) && root.contains(endContainer)
+    ) ?? null;
+
   if (!messageRoot) {
-    return null;
+    messageRoot = findAssistantRootFromNode(startContainer);
+    if (
+      !messageRoot ||
+      !messageRoot.contains(startContainer) ||
+      !messageRoot.contains(endContainer)
+    ) {
+      return null;
+    }
   }
 
   const start = getTextOffset(messageRoot, startContainer, startOffset);
@@ -171,13 +184,48 @@ export function getSelectionAnchor(
     return null;
   }
 
+  let rect = range.getBoundingClientRect();
+  if ((!rect.width && !rect.height) || Number.isNaN(rect.top)) {
+    const rects = range.getClientRects();
+    if (rects.length > 0) {
+      rect = rects[0]!;
+    }
+  }
+
   return {
     messageRoot,
     start,
     end,
     quotedText,
-    rect: range.getBoundingClientRect(),
+    rect,
   };
+}
+
+/** Walk up from a selection node to a plausible assistant message root. */
+function findAssistantRootFromNode(node: Node): HTMLElement | null {
+  const el =
+    node.nodeType === Node.ELEMENT_NODE
+      ? (node as HTMLElement)
+      : node.parentElement;
+  if (!el) return null;
+
+  const turn = el.closest<HTMLElement>(
+    [
+      '[data-message-author-role="assistant"]',
+      '[data-turn="assistant"]',
+      'article[data-turn-role="assistant"]',
+      '[data-testid="assistant-message"]',
+      '[data-testid*="assistant"]',
+    ].join(", ")
+  );
+  if (!turn) return null;
+
+  // Prefer the markdown body when present so offsets match highlight wrapping.
+  return (
+    turn.querySelector<HTMLElement>(
+      ".markdown, .prose, [class*='markdown'], [class*='prose'], .whitespace-pre-wrap"
+    ) ?? turn
+  );
 }
 
 /** Recompute a viewport rect for a previously captured selection anchor. */
@@ -300,8 +348,9 @@ function findNativeAskToolbar(): {
 }
 
 /**
- * Prefer injecting "Ask about this" next to ChatGPT's selection toolbar.
- * Fallback: float below the selection so we don't cover Ask ChatGPT.
+ * Always show a floating "Ask about this" near the selection.
+ * Also try injecting next to ChatGPT's toolbar when present (bonus), but
+ * never rely on that alone — React often remounts and drops injected nodes.
  */
 export function attachSelectionHandler(
   getMessageRoots: () => HTMLElement[],
@@ -311,6 +360,7 @@ export function attachSelectionHandler(
   let pending: SelectionAnchor | null = null;
   let toolbarObserver: MutationObserver | null = null;
   let injectTimer: ReturnType<typeof setTimeout> | null = null;
+  let selectionTimer: ReturnType<typeof setTimeout> | null = null;
 
   const clearObserver = () => {
     toolbarObserver?.disconnect();
@@ -336,7 +386,7 @@ export function attachSelectionHandler(
       Math.max(8, rect.bottom + 8)
     );
     const left = Math.min(
-      window.innerWidth - 140,
+      window.innerWidth - 160,
       Math.max(8, rect.left)
     );
     el.style.top = `${top}px`;
@@ -359,7 +409,7 @@ export function attachSelectionHandler(
 
   const tryInjectIntoToolbar = (): boolean => {
     if (!pending) return false;
-    document.getElementById(ASK_BUTTON_INJECTED)?.remove();
+    if (document.getElementById(ASK_BUTTON_INJECTED)) return true;
 
     const found = findNativeAskToolbar();
     if (!found) return false;
@@ -373,7 +423,6 @@ export function attachSelectionHandler(
     } else {
       found.row.appendChild(injected);
     }
-    button = injected;
 
     try {
       const cs = getComputedStyle(found.button);
@@ -389,32 +438,96 @@ export function attachSelectionHandler(
   };
 
   const show = (anchor: SelectionAnchor) => {
-    hide();
+    // Keep pending across re-shows so we don't flicker the floating button away.
     pending = anchor;
-
-    if (tryInjectIntoToolbar()) return;
-
     placeFloating(anchor);
+    tryInjectIntoToolbar();
 
-    toolbarObserver = new MutationObserver(() => {
-      if (tryInjectIntoToolbar()) {
-        document.getElementById(ASK_BUTTON_ID)?.remove();
-        clearObserver();
-      }
-    });
-    toolbarObserver.observe(document.body, { childList: true, subtree: true });
-    injectTimer = setTimeout(() => clearObserver(), 1500);
+    if (!toolbarObserver) {
+      toolbarObserver = new MutationObserver(() => {
+        if (!pending) return;
+        // Re-inject if ChatGPT remounted the toolbar and dropped our node.
+        tryInjectIntoToolbar();
+        // Always ensure floating exists as the reliable path.
+        if (!document.getElementById(ASK_BUTTON_ID)) {
+          placeFloating(pending);
+        }
+      });
+      toolbarObserver.observe(document.body, {
+        childList: true,
+        subtree: true,
+      });
+      injectTimer = setTimeout(() => clearObserver(), 4000);
+    }
   };
 
-  const onMouseUp = () => {
-    setTimeout(() => {
-      const anchor = getSelectionAnchor(getMessageRoots());
-      if (anchor) {
-        show(anchor);
-      } else if (!button?.matches(":hover")) {
+  const refreshFromSelection = () => {
+    const anchor = getSelectionAnchor(getMessageRoots());
+    if (anchor) {
+      show(anchor);
+      return;
+    }
+    // ChatGPT often collapses the native selection when its own toolbar mounts.
+    // If we already captured an anchor, keep the floating button visible.
+    if (pending && document.getElementById(ASK_BUTTON_ID)) {
+      return;
+    }
+    if (pending && document.getElementById(ASK_BUTTON_INJECTED)) {
+      placeFloating(pending);
+      return;
+    }
+    const overAsk = Array.from(
+      document.querySelectorAll<HTMLElement>("[data-ai-helper-ask='1']")
+    );
+    if (overAsk.some((el) => el.matches(":hover"))) return;
+  };
+
+  const scheduleRefresh = (delayMs: number) => {
+    if (selectionTimer) clearTimeout(selectionTimer);
+    selectionTimer = setTimeout(() => {
+      selectionTimer = null;
+      refreshFromSelection();
+    }, delayMs);
+  };
+
+  const onMouseUp = () => scheduleRefresh(40);
+  const onTouchEnd = () => scheduleRefresh(60);
+  const onKeyUp = (e: KeyboardEvent) => {
+    if (
+      e.key === "Shift" ||
+      e.key.startsWith("Arrow") ||
+      e.key === "Home" ||
+      e.key === "End"
+    ) {
+      scheduleRefresh(40);
+    }
+  };
+  const onSelectionChange = () => scheduleRefresh(80);
+
+  const onPointerDown = (e: Event) => {
+    const t = e.target;
+    if (!(t instanceof Node)) return;
+    if (
+      t instanceof Element &&
+      (t.closest("[data-ai-helper-ask='1']") ||
+        t.closest(`#${ASK_BUTTON_ID}`) ||
+        t.closest(`#${ASK_BUTTON_INJECTED}`))
+    ) {
+      return;
+    }
+    // Click elsewhere dismisses our button (and pending).
+    if (pending) {
+      // Defer so a click on Ask still sees pending in mousedown/click handlers.
+      setTimeout(() => {
+        const sel = window.getSelection();
+        if (sel && !sel.isCollapsed) return;
         hide();
-      }
-    }, 30);
+      }, 0);
+    }
+  };
+
+  const onKeyDown = (e: KeyboardEvent) => {
+    if (e.key === "Escape" && pending) hide();
   };
 
   /** Keep the Ask button while scrolling; only hide if the anchor is gone. */
@@ -430,29 +543,33 @@ export function attachSelectionHandler(
         ? live.rect
         : getAnchorRect(pending);
     if (!rect || (rect.width === 0 && rect.height === 0)) {
-      // Scrolled far off-screen — keep pending but hide the floating control.
       document.getElementById(ASK_BUTTON_ID)?.remove();
       if (button?.id === ASK_BUTTON_ID) button = null;
       return;
     }
     if (live) pending = live;
     else pending = { ...pending, rect };
-
-    const injected = document.getElementById(ASK_BUTTON_INJECTED);
-    if (injected) {
-      // Native toolbar still present — leave our inline button alone.
-      return;
-    }
-    // Toolbar often unmounts on scroll; fall back to a floating button.
     placeFloating(pending);
+    tryInjectIntoToolbar();
   };
 
-  document.addEventListener("mouseup", onMouseUp);
+  document.addEventListener("mouseup", onMouseUp, true);
+  document.addEventListener("touchend", onTouchEnd, true);
+  document.addEventListener("keyup", onKeyUp, true);
+  document.addEventListener("keydown", onKeyDown, true);
+  document.addEventListener("pointerdown", onPointerDown, true);
+  document.addEventListener("selectionchange", onSelectionChange);
   window.addEventListener("scroll", onScroll, true);
 
   return () => {
-    document.removeEventListener("mouseup", onMouseUp);
+    document.removeEventListener("mouseup", onMouseUp, true);
+    document.removeEventListener("touchend", onTouchEnd, true);
+    document.removeEventListener("keyup", onKeyUp, true);
+    document.removeEventListener("keydown", onKeyDown, true);
+    document.removeEventListener("pointerdown", onPointerDown, true);
+    document.removeEventListener("selectionchange", onSelectionChange);
     window.removeEventListener("scroll", onScroll, true);
+    if (selectionTimer) clearTimeout(selectionTimer);
     hide();
   };
 }

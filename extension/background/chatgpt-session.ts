@@ -334,6 +334,7 @@ async function recoverViaWebSocket(
   accessToken: string,
   userAgent: string,
   topicId: string,
+  onPartial?: (text: string) => void,
   timeoutMs = 90_000
 ): Promise<{ reply: string; messageId?: string; conversationId?: string }> {
   const wsUrl = await getChatGptWebSocketUrl(accessToken, userAgent);
@@ -356,6 +357,11 @@ async function recoverViaWebSocket(
     let cmdId = 4;
     let framesSeen = 0;
     let encodedSeen = 0;
+
+    const emit = (text: string) => {
+      if (!text.trim()) return;
+      onPartial?.(cleanChatGptText(text));
+    };
 
     const finish = (ok: boolean, err?: string) => {
       if (settled) return;
@@ -464,7 +470,10 @@ async function recoverViaWebSocket(
           const parsed = parseConversationSseText(sseBuffer);
           if (parsed.conversationId) conversationId = parsed.conversationId;
           if (parsed.messageId) messageId = parsed.messageId;
-          if (parsed.reply) reply = parsed.reply;
+          if (parsed.reply) {
+            reply = parsed.reply;
+            emit(reply);
+          }
           if (
             (encoded.includes("[DONE]") ||
               parsed.eventTypes.includes("message_stream_complete")) &&
@@ -477,7 +486,10 @@ async function recoverViaWebSocket(
 
         const direct = extractAssistantFromUnknownFrame(frame);
         if (direct?.text) {
-          if (direct.text.length >= reply.length) reply = direct.text;
+          if (direct.text.length >= reply.length) {
+            reply = direct.text;
+            emit(reply);
+          }
           if (direct.messageId) messageId = direct.messageId;
           if (direct.finished && reply.trim()) {
             finish(true);
@@ -621,7 +633,8 @@ async function pollConversationForReply(
 async function parseConversationStream(
   res: Response,
   accessToken: string,
-  userAgent: string
+  userAgent: string,
+  onPartial?: (text: string) => void
 ): Promise<{ reply: string; conversationId?: string; messageId?: string }> {
   const contentType = res.headers.get("content-type") || "";
 
@@ -635,7 +648,31 @@ async function parseConversationStream(
     );
   }
 
-  const text = await res.text();
+  const emit = (text: string) => {
+    if (!text.trim()) return;
+    onPartial?.(cleanChatGptText(text));
+  };
+
+  let text = "";
+  if (res.body) {
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let lastEmitted = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      text += decoder.decode(value, { stream: true });
+      const live = parseConversationSseText(text);
+      if (live.reply && live.reply !== lastEmitted) {
+        lastEmitted = live.reply;
+        emit(live.reply);
+      }
+    }
+    text += decoder.decode();
+  } else {
+    text = await res.text();
+  }
+
   const parsed = parseConversationSseText(text);
 
   console.info(
@@ -646,6 +683,7 @@ async function parseConversationStream(
   );
 
   if (parsed.reply.trim()) {
+    emit(parsed.reply);
     return {
       reply: parsed.reply,
       conversationId: parsed.conversationId,
@@ -663,7 +701,12 @@ async function parseConversationStream(
 
   if (parsed.topicId) {
     tasks.push(
-      recoverViaWebSocket(accessToken, userAgent, parsed.topicId).then((r) => ({
+      recoverViaWebSocket(
+        accessToken,
+        userAgent,
+        parsed.topicId,
+        onPartial
+      ).then((r) => ({
         ...r,
         via: "websocket",
       }))
@@ -675,12 +718,15 @@ async function parseConversationStream(
         accessToken,
         userAgent,
         parsed.conversationId
-      ).then((r) => ({
-        reply: r.reply,
-        messageId: r.messageId,
-        conversationId: parsed.conversationId,
-        via: "poll",
-      }))
+      ).then((r) => {
+        emit(r.reply);
+        return {
+          reply: r.reply,
+          messageId: r.messageId,
+          conversationId: parsed.conversationId,
+          via: "poll",
+        };
+      })
     );
   }
 
@@ -705,6 +751,7 @@ async function parseConversationStream(
   try {
     const winner = await raceFirst(tasks);
     console.info(`${LOG} Handoff recovered via ${winner.via}`);
+    emit(winner.reply);
     return {
       reply: winner.reply,
       conversationId: winner.conversationId || parsed.conversationId,
@@ -745,7 +792,8 @@ async function postConversation(
   prompt: string,
   model: string,
   sideConversationId?: string,
-  sideParentMessageId?: string
+  sideParentMessageId?: string,
+  onPartial?: (text: string) => void
 ): Promise<CompleteResult> {
   const messageId = uuid();
   const parentMessageId = sideParentMessageId || "client-created-root";
@@ -812,9 +860,6 @@ async function postConversation(
       );
       lastError = `ChatGPT conversation failed (HTTP ${res.status}). Reload and re-login if needed.`;
 
-      // No longer retry around history_and_training_disabled — we keep it false
-      // so handoff recovery can poll / persist the side conversation.
-
       if (res.status === 401 || res.status === 403) {
         throw new Error(
           `ChatGPT session unavailable (HTTP ${res.status}). Reload chatgpt.com / re-login, then try again.`
@@ -823,7 +868,12 @@ async function postConversation(
       continue;
     }
 
-    const parsed = await parseConversationStream(res, accessToken, userAgent);
+    const parsed = await parseConversationStream(
+      res,
+      accessToken,
+      userAgent,
+      onPartial
+    );
     return {
       reply: parsed.reply,
       conversationId: parsed.conversationId || sideConversationId || "",
@@ -836,11 +886,12 @@ async function postConversation(
 }
 
 /**
- * Ask ChatGPT via the logged-in session. Buffers the full SSE reply (no UI streaming).
+ * Ask ChatGPT via the logged-in session. Streams partial text via onPartial when provided.
  */
 export async function completeViaChatGptSession(
   creds: SessionCredentials,
-  req: AskFollowUpRequest
+  req: AskFollowUpRequest,
+  onPartial?: (text: string) => void
 ): Promise<AskFollowUpResponse> {
   try {
     const prompt = buildFollowUpPrompt({
@@ -862,7 +913,8 @@ export async function completeViaChatGptSession(
       prompt,
       model,
       req.sideConversationId,
-      req.sideParentMessageId
+      req.sideParentMessageId,
+      onPartial
     );
 
     if (!result.conversationId) {
