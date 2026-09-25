@@ -5,11 +5,15 @@
   "description": "Highlight-to-thread Chrome extension for AI chat sites",
   "scripts": {
     "build": "node esbuild.config.mjs",
-    "watch": "node esbuild.config.mjs --watch"
+    "watch": "node esbuild.config.mjs --watch",
+    "test:sse": "node tests/sse-handoff.test.mjs"
   },
   "devDependencies": {
     "@types/chrome": "^0.0.268",
     "esbuild": "^0.25.0",
     "typescript": "^5.7.3"
+  },
+  "dependencies": {
+    "js-sha3": "^0.13.0"
   }
 }

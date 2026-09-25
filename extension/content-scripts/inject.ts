@@ -6,7 +6,6 @@ function resolveAdapter(hostname: string): SiteAdapter | null {
   if (hostname === "chatgpt.com" || hostname === "www.chatgpt.com") {
     return createChatGptAdapter();
   }
-  // Future: claude.ai, gemini.google.com, etc.
   return null;
 }
 

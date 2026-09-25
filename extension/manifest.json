@@ -4,6 +4,7 @@
   "version": "0.1.0",
   "description": "Highlight text in AI responses and ask follow-ups in a sidebar thread without polluting the main chat.",
   "permissions": ["storage", "activeTab"],
+  "host_permissions": ["https://chatgpt.com/*"],
   "background": {
     "service_worker": "service-worker.js"
   },

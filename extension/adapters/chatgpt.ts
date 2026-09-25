@@ -1,6 +1,17 @@
 import type { SiteAdapter } from "../core/types";
 
-const ASSISTANT_SELECTOR = '[data-message-author-role="assistant"]';
+/** Prefer stable role attrs; fall back to newer turn markers ChatGPT experiments with. */
+const ASSISTANT_SELECTORS = [
+  '[data-message-author-role="assistant"]',
+  '[data-turn="assistant"]',
+  'article[data-turn-role="assistant"]',
+  '[data-testid="assistant-message"]',
+];
+const USER_SELECTORS = [
+  '[data-message-author-role="user"]',
+  '[data-turn="user"]',
+  'article[data-turn-role="user"]',
+];
 const STOP_BUTTON_SELECTORS = [
   'button[aria-label="Stop generating"]',
   'button[aria-label*="Stop"]',
@@ -16,8 +27,20 @@ function simpleHash(input: string): string {
   return (h >>> 0).toString(16);
 }
 
+function queryAll(selectors: string[]): HTMLElement[] {
+  const seen = new Set<HTMLElement>();
+  const out: HTMLElement[] = [];
+  for (const sel of selectors) {
+    for (const el of document.querySelectorAll<HTMLElement>(sel)) {
+      if (seen.has(el)) continue;
+      seen.add(el);
+      out.push(el);
+    }
+  }
+  return out;
+}
+
 function findChatScrollContainer(): HTMLElement | null {
-  // ChatGPT typically scrolls inside a main conversation pane.
   const candidates = [
     document.querySelector("main"),
     document.querySelector('[class*="react-scroll"]'),
@@ -31,16 +54,18 @@ function findChatScrollContainer(): HTMLElement | null {
 }
 
 function extractConversationIdFromUrl(): string {
-  // Paths look like /c/<uuid> or /share/<id>
   const match = location.pathname.match(/\/(c|share)\/([a-zA-Z0-9-]+)/);
   if (match) return match[2];
-  // New/empty chats may have no id yet — use a session-scoped fallback.
   return `anon-${location.pathname || "root"}`;
 }
+
+const ROLE_SELECTOR =
+  "[data-message-author-role], [data-turn], [data-turn-role]";
 
 export function createChatGptAdapter(): SiteAdapter {
   let warnedEmpty = false;
   let warnedNoScroll = false;
+  let warnedEmptyExcerpt = false;
 
   const adapter: SiteAdapter = {
     siteId: "chatgpt",
@@ -49,14 +74,66 @@ export function createChatGptAdapter(): SiteAdapter {
       return extractConversationIdFromUrl();
     },
 
-    getMessageContainers(): HTMLElement[] {
+    getConversationExcerpt(maxChars: number): string {
       const turns = Array.from(
-        document.querySelectorAll<HTMLElement>(ASSISTANT_SELECTOR)
+        document.querySelectorAll<HTMLElement>(ROLE_SELECTOR)
       );
-      if (turns.length === 0 && !warnedEmpty) {
+      if (turns.length === 0) {
+        // Empty new chat — expected, stay quiet.
+        return "";
+      }
+      warnedEmptyExcerpt = false;
+
+      const chunks: string[] = [];
+      for (const turn of turns) {
+        const role =
+          turn.getAttribute("data-message-author-role") ||
+          turn.getAttribute("data-turn") ||
+          turn.getAttribute("data-turn-role") ||
+          "unknown";
+        if (role !== "user" && role !== "assistant") continue;
+        const body =
+          turn.querySelector<HTMLElement>(
+            ".markdown, .prose, [class*='markdown']"
+          ) ?? turn;
+        const text = (body.innerText || "").replace(/\s+/g, " ").trim();
+        if (!text) continue;
+        chunks.push(`${role.toUpperCase()}: ${text}`);
+      }
+
+      if (chunks.length === 0) {
+        if (!warnedEmptyExcerpt) {
+          console.warn(
+            "[ai-helper][chatgpt-session] Conversation excerpt: turns present but no usable text."
+          );
+          warnedEmptyExcerpt = true;
+        }
+        return "";
+      }
+
+      let excerpt = "";
+      for (let i = chunks.length - 1; i >= 0; i--) {
+        const next = excerpt ? `${chunks[i]}\n\n${excerpt}` : chunks[i];
+        if (next.length > maxChars) {
+          if (!excerpt) {
+            excerpt = chunks[i].slice(-maxChars);
+          }
+          break;
+        }
+        excerpt = next;
+      }
+      return excerpt;
+    },
+
+    getMessageContainers(): HTMLElement[] {
+      const turns = queryAll(ASSISTANT_SELECTORS);
+      const users = queryAll(USER_SELECTORS);
+
+      // Only warn when the page clearly has chat content but assistants are missing.
+      if (turns.length === 0 && users.length > 0 && !warnedEmpty) {
         console.warn(
-          `[ai-helper] ChatGPT adapter: no messages matched selector "${ASSISTANT_SELECTOR}". ` +
-            "The site DOM may have changed."
+          `[ai-helper] ChatGPT adapter: found user turns but no assistant messages ` +
+            `(tried: ${ASSISTANT_SELECTORS.join(", ")}). The site DOM may have changed.`
         );
         warnedEmpty = true;
       }
@@ -64,8 +141,6 @@ export function createChatGptAdapter(): SiteAdapter {
         warnedEmpty = false;
       }
 
-      // Prefer the markdown/prose body so highlight re-renders don't wipe
-      // avatars, action buttons, or other chrome around the turn.
       return turns.map((turn) => {
         const content =
           turn.querySelector<HTMLElement>(
@@ -77,7 +152,7 @@ export function createChatGptAdapter(): SiteAdapter {
 
     getMessageId(el: HTMLElement): string {
       const turn =
-        el.closest<HTMLElement>(ASSISTANT_SELECTOR) ?? el;
+        el.closest<HTMLElement>(ASSISTANT_SELECTORS.join(",")) ?? el;
       const fromAttr =
         turn.getAttribute("data-message-id") ||
         turn.getAttribute("data-testid") ||
@@ -93,15 +168,12 @@ export function createChatGptAdapter(): SiteAdapter {
     isMessageComplete(el: HTMLElement): boolean {
       for (const sel of STOP_BUTTON_SELECTORS) {
         if (document.querySelector(sel)) {
-          // A stop button anywhere usually means generation is still running.
-          // Prefer checking near this message if possible.
           const near = el.closest("article, [data-testid]") ?? el.parentElement;
           if (near?.querySelector(sel) || document.querySelector(sel)) {
             return false;
           }
         }
       }
-      // Also treat messages still marked as streaming as incomplete when present.
       if (
         el.getAttribute("data-is-streaming") === "true" ||
         el.querySelector('[data-is-streaming="true"]')
@@ -139,7 +211,6 @@ export function createChatGptAdapter(): SiteAdapter {
 
       const observer = new MutationObserver(() => {
         if (quietTimer) clearTimeout(quietTimer);
-        // Debounce ~500ms of quiet DOM before treating new nodes as settled.
         quietTimer = setTimeout(() => {
           reportExisting();
         }, 500);
@@ -147,7 +218,6 @@ export function createChatGptAdapter(): SiteAdapter {
 
       observer.observe(root, { childList: true, subtree: true });
 
-      // Also re-scan on SPA navigations (conversation switches).
       let lastHref = location.href;
       setInterval(() => {
         if (location.href !== lastHref) {

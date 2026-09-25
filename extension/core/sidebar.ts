@@ -1,9 +1,13 @@
 import type { AskFollowUpRequest, AskFollowUpResponse, Thread } from "./types";
+import { formatReplyHtml } from "./text-clean";
+import { fetchAccessTokenFromPage } from "./chatgpt-auth";
+import { completeViaChatGptSession } from "../background/chatgpt-session";
 
 const HOST_ID = "ai-helper-sidebar-host";
 
 export interface SidebarCallbacks {
   onFocusThread: (threadId: string) => void;
+  onCloseThread: (threadId: string) => void;
   onSend: (
     thread: Thread,
     question: string
@@ -16,6 +20,32 @@ const STYLES = `
 }
 * {
   box-sizing: border-box;
+}
+.fab {
+  position: fixed;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 2147483647;
+  width: 28px;
+  height: 72px;
+  padding: 0;
+  border: 1px solid #d8d8d4;
+  border-radius: 8px;
+  background: #f7f7f5;
+  color: #333;
+  font: 600 11px/1 "Segoe UI", system-ui, sans-serif;
+  cursor: pointer;
+  box-shadow: 0 2px 10px rgba(0,0,0,0.12);
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+  letter-spacing: 0.04em;
+  display: none;
+}
+.fab.visible {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 .panel {
   position: fixed;
@@ -33,26 +63,15 @@ const STYLES = `
   box-shadow: -4px 0 24px rgba(0,0,0,0.08);
   display: flex;
   flex-direction: column;
-  z-index: 2147483647;
+  z-index: 2147483646;
   transform: translateX(0);
   transition: transform 0.2s ease;
+  pointer-events: auto;
 }
 .panel.collapsed {
-  transform: translateX(calc(100% - 40px));
-}
-.toggle {
-  position: absolute;
-  left: -40px;
-  top: 72px;
-  width: 40px;
-  height: 40px;
-  border: 1px solid #d8d8d4;
-  border-right: none;
-  border-radius: 8px 0 0 8px;
-  background: #f7f7f5;
-  cursor: pointer;
-  font-size: 16px;
-  color: #333;
+  transform: translateX(100%);
+  box-shadow: none;
+  pointer-events: none;
 }
 .header {
   padding: 14px 16px;
@@ -103,6 +122,28 @@ const STYLES = `
   padding: 10px 12px;
   cursor: pointer;
   user-select: none;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+.card-header-main {
+  flex: 1;
+  min-width: 0;
+}
+.close-btn {
+  flex-shrink: 0;
+  border: none;
+  background: transparent;
+  color: #888;
+  font-size: 16px;
+  line-height: 1;
+  padding: 2px 4px;
+  cursor: pointer;
+  border-radius: 4px;
+}
+.close-btn:hover {
+  background: #eee;
+  color: #333;
 }
 .quote {
   font-style: italic;
@@ -148,6 +189,16 @@ const STYLES = `
   color: #888;
   margin-bottom: 2px;
 }
+.reply .body {
+  white-space: normal;
+  word-break: break-word;
+}
+.reply .body strong {
+  font-weight: 600;
+}
+.reply .body em {
+  font-style: italic;
+}
 .composer {
   display: flex;
   gap: 6px;
@@ -185,11 +236,13 @@ export class Sidebar {
   private host: HTMLElement;
   private shadow: ShadowRoot;
   private panel!: HTMLElement;
+  private fab!: HTMLButtonElement;
   private listEl!: HTMLElement;
   private threads: Thread[] = [];
   private expanded = new Set<string>();
   private activeId: string | null = null;
-  private collapsed = false;
+  /** Start collapsed so we don't cover ChatGPT chrome until needed. */
+  private collapsed = true;
   private callbacks: SidebarCallbacks;
 
   constructor(callbacks: SidebarCallbacks) {
@@ -214,13 +267,19 @@ export class Sidebar {
   focusThread(threadId: string): void {
     this.expanded.add(threadId);
     this.activeId = threadId;
-    this.collapsed = false;
-    this.panel.classList.remove("collapsed");
+    this.setCollapsed(false);
     this.renderList();
     const card = this.shadow.querySelector(
       `[data-thread-id="${CSS.escape(threadId)}"]`
     ) as HTMLElement | null;
     card?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }
+
+  private setCollapsed(collapsed: boolean): void {
+    this.collapsed = collapsed;
+    this.panel.classList.toggle("collapsed", collapsed);
+    this.fab.classList.toggle("visible", collapsed);
+    this.fab.setAttribute("aria-expanded", collapsed ? "false" : "true");
   }
 
   private renderShell(): void {
@@ -229,10 +288,18 @@ export class Sidebar {
     style.textContent = STYLES;
     this.shadow.appendChild(style);
 
+    this.fab = document.createElement("button");
+    this.fab.type = "button";
+    this.fab.className = "fab visible";
+    this.fab.title = "Open highlight threads";
+    this.fab.setAttribute("aria-label", "Open highlight threads");
+    this.fab.textContent = "Threads";
+    this.fab.addEventListener("click", () => this.setCollapsed(false));
+    this.shadow.appendChild(this.fab);
+
     this.panel = document.createElement("div");
-    this.panel.className = "panel";
+    this.panel.className = "panel collapsed";
     this.panel.innerHTML = `
-      <button type="button" class="toggle" title="Toggle sidebar" aria-label="Toggle sidebar">☰</button>
       <div class="header">
         <span>Highlight threads</span>
         <button type="button" class="collapse-btn" title="Collapse" aria-label="Collapse">›</button>
@@ -242,13 +309,8 @@ export class Sidebar {
     this.shadow.appendChild(this.panel);
     this.listEl = this.panel.querySelector(".list") as HTMLElement;
 
-    this.panel.querySelector(".toggle")?.addEventListener("click", () => {
-      this.collapsed = !this.collapsed;
-      this.panel.classList.toggle("collapsed", this.collapsed);
-    });
     this.panel.querySelector(".collapse-btn")?.addEventListener("click", () => {
-      this.collapsed = true;
-      this.panel.classList.add("collapsed");
+      this.setCollapsed(true);
     });
   }
 
@@ -273,13 +335,16 @@ export class Sidebar {
 
     const header = document.createElement("div");
     header.className = "card-header";
-    header.innerHTML = `
+
+    const main = document.createElement("div");
+    main.className = "card-header-main";
+    main.innerHTML = `
       <div class="quote">${escapeHtml(thread.quotedText)}</div>
       <div class="meta">${thread.replies.length} ${
       thread.replies.length === 1 ? "reply" : "replies"
     }</div>
     `;
-    header.addEventListener("click", () => {
+    main.addEventListener("click", () => {
       if (this.expanded.has(thread.id)) {
         this.expanded.delete(thread.id);
       } else {
@@ -289,6 +354,23 @@ export class Sidebar {
       this.callbacks.onFocusThread(thread.id);
       this.renderList();
     });
+
+    const closeBtn = document.createElement("button");
+    closeBtn.type = "button";
+    closeBtn.className = "close-btn";
+    closeBtn.title = "Close thread";
+    closeBtn.setAttribute("aria-label", "Close thread");
+    closeBtn.textContent = "×";
+    closeBtn.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      this.expanded.delete(thread.id);
+      if (this.activeId === thread.id) this.activeId = null;
+      this.callbacks.onCloseThread(thread.id);
+    });
+
+    header.appendChild(main);
+    header.appendChild(closeBtn);
     card.appendChild(header);
 
     const body = document.createElement("div");
@@ -299,9 +381,9 @@ export class Sidebar {
     for (const r of thread.replies) {
       const div = document.createElement("div");
       div.className = `reply ${r.role}`;
-      div.innerHTML = `<div class="role">${r.role}</div><div>${escapeHtml(
-        r.text
-      )}</div>`;
+      div.innerHTML = `<div class="role">${r.role}</div><div class="body">${
+        r.role === "assistant" ? formatReplyHtml(r.text) : escapeHtml(r.text)
+      }</div>`;
       replies.appendChild(div);
     }
     body.appendChild(replies);
@@ -333,8 +415,13 @@ export class Sidebar {
         status.textContent = err instanceof Error ? err.message : String(err);
       } finally {
         send.disabled = false;
-        this.renderList();
-        this.focusThread(thread.id);
+        // Thread may have been closed while the request was in flight.
+        if (this.threads.some((t) => t.id === thread.id)) {
+          this.renderList();
+          this.focusThread(thread.id);
+        } else {
+          this.renderList();
+        }
       }
     };
 
@@ -363,11 +450,32 @@ function escapeHtml(s: string): string {
     .replace(/"/g, "&quot;");
 }
 
-/** Send an ask-follow-up request to the background service worker. */
-export function sendAskFollowUp(
+/**
+ * Ask a follow-up about a highlight.
+ *
+ * ChatGPT runs entirely in the content script (no CS↔SW↔CS nested messaging).
+ * That nested pattern closes the message channel before long handoff/WS work
+ * finishes. Other sites can still route through the service worker later.
+ */
+export async function sendAskFollowUp(
   payload: Omit<AskFollowUpRequest, "type">
 ): Promise<AskFollowUpResponse> {
   const message: AskFollowUpRequest = { type: "ask-follow-up", ...payload };
+
+  if (payload.siteId === "chatgpt") {
+    try {
+      console.info(
+        "[ai-helper][chatgpt-session] Completing follow-up in page (direct path)"
+      );
+      const creds = await fetchAccessTokenFromPage();
+      return await completeViaChatGptSession(creds, message);
+    } catch (err) {
+      const error = err instanceof Error ? err.message : String(err);
+      console.error("[ai-helper][chatgpt-session] complete failed:", error);
+      return { ok: false, error };
+    }
+  }
+
   return new Promise((resolve) => {
     chrome.runtime.sendMessage(message, (response: AskFollowUpResponse) => {
       if (chrome.runtime.lastError) {

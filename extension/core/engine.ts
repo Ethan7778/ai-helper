@@ -2,11 +2,19 @@ import {
   applyHighlightsToElement,
   attachSelectionHandler,
   getPlainText,
+  unwrapHighlights,
   type SelectionAnchor,
 } from "./anchor";
 import { Sidebar, sendAskFollowUp } from "./sidebar";
-import { loadThreads, saveThreads } from "./storage";
+import {
+  EXTENSION_RELOAD_MSG,
+  isExtensionAlive,
+  loadThreads,
+  saveThreads,
+} from "./storage";
 import type { SiteAdapter, Thread } from "./types";
+
+const EXCERPT_MAX_CHARS = 4000;
 
 function createId(): string {
   if (typeof crypto !== "undefined" && crypto.randomUUID) {
@@ -24,9 +32,29 @@ export async function bootEngine(adapter: SiteAdapter): Promise<() => void> {
   let conversationId = adapter.getConversationId();
   let threads: Thread[] = await loadThreads(adapter.siteId, conversationId);
   const messageEls = new Map<string, HTMLElement>();
+  let dead = false;
+
+  const markDead = (err?: unknown) => {
+    if (dead) return;
+    dead = true;
+    const msg =
+      err instanceof Error && /reload this/i.test(err.message)
+        ? err.message
+        : EXTENSION_RELOAD_MSG;
+    console.warn("[ai-helper]", msg, err instanceof Error ? err.message : err);
+  };
 
   const persist = async () => {
-    await saveThreads(adapter.siteId, conversationId, threads);
+    if (!isExtensionAlive()) {
+      markDead();
+      throw new Error(EXTENSION_RELOAD_MSG);
+    }
+    try {
+      await saveThreads(adapter.siteId, conversationId, threads);
+    } catch (err) {
+      markDead(err);
+      throw err instanceof Error ? err : new Error(String(err));
+    }
   };
 
   const surroundingContext = (thread: Thread): string => {
@@ -37,6 +65,13 @@ export async function bootEngine(adapter: SiteAdapter): Promise<() => void> {
     const start = Math.max(0, thread.anchorStart - pad);
     const end = Math.min(raw.length, thread.anchorEnd + pad);
     return raw.slice(start, end);
+  };
+
+  const conversationExcerpt = (): string => {
+    if (typeof adapter.getConversationExcerpt === "function") {
+      return adapter.getConversationExcerpt(EXCERPT_MAX_CHARS);
+    }
+    return "";
   };
 
   const bindMarkClicks = () => {
@@ -64,6 +99,37 @@ export async function bootEngine(adapter: SiteAdapter): Promise<() => void> {
     bindMarkClicks();
   };
 
+  const removeThread = async (threadId: string) => {
+    const removed = threads.find((t) => t.id === threadId);
+    if (!removed) return { ok: true as const };
+    const previous = threads;
+    threads = threads.filter((t) => t.id !== threadId);
+    try {
+      await persist();
+    } catch (err) {
+      threads = previous;
+      sidebar.setThreads(threads);
+      return {
+        ok: false as const,
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
+    sidebar.setThreads(threads);
+    const el = messageEls.get(removed.messageId);
+    if (el) {
+      const remaining = threads.filter((t) => t.messageId === removed.messageId);
+      if (remaining.length === 0) {
+        unwrapHighlights(el);
+      } else {
+        applyHighlightsToElement(el, remaining);
+        bindMarkClicks();
+      }
+    } else {
+      refreshHighlights();
+    }
+    return { ok: true as const };
+  };
+
   const sidebar = new Sidebar({
     onFocusThread: (threadId) => {
       const mark = document.querySelector(
@@ -77,26 +143,45 @@ export async function bootEngine(adapter: SiteAdapter): Promise<() => void> {
         }, 1200);
       }
     },
+    onCloseThread: (threadId) => {
+      void removeThread(threadId);
+    },
     onSend: async (thread, question) => {
+      if (!isExtensionAlive()) {
+        markDead();
+        return { ok: false, error: EXTENSION_RELOAD_MSG };
+      }
       const idx = threads.findIndex((t) => t.id === thread.id);
       if (idx < 0) return { ok: false, error: "Thread not found" };
 
+      const current = threads[idx];
       threads[idx] = {
-        ...threads[idx],
+        ...current,
         replies: [
-          ...threads[idx].replies,
+          ...current.replies,
           { role: "user", text: question, ts: Date.now() },
         ],
       };
-      await persist();
+      try {
+        await persist();
+      } catch (err) {
+        return {
+          ok: false,
+          error: err instanceof Error ? err.message : String(err),
+        };
+      }
       sidebar.setThreads(threads);
 
       const result = await sendAskFollowUp({
-        quotedText: thread.quotedText,
-        surroundingContext: surroundingContext(thread),
+        siteId: adapter.siteId,
+        quotedText: current.quotedText,
+        surroundingContext: surroundingContext(current),
+        conversationExcerpt: conversationExcerpt(),
         question,
-        messageId: thread.messageId,
-        threadId: thread.id,
+        messageId: current.messageId,
+        threadId: current.id,
+        sideConversationId: current.sideConversationId,
+        sideParentMessageId: current.sideParentMessageId,
       });
 
       if (result.ok && result.reply) {
@@ -104,12 +189,23 @@ export async function bootEngine(adapter: SiteAdapter): Promise<() => void> {
         if (i >= 0) {
           threads[i] = {
             ...threads[i],
+            sideConversationId:
+              result.sideConversationId ?? threads[i].sideConversationId,
+            sideParentMessageId:
+              result.sideParentMessageId ?? threads[i].sideParentMessageId,
             replies: [
               ...threads[i].replies,
               { role: "assistant", text: result.reply, ts: Date.now() },
             ],
           };
-          await persist();
+          try {
+            await persist();
+          } catch (err) {
+            return {
+              ok: false,
+              error: err instanceof Error ? err.message : String(err),
+            };
+          }
           sidebar.setThreads(threads);
         }
       }
@@ -139,6 +235,11 @@ export async function bootEngine(adapter: SiteAdapter): Promise<() => void> {
   };
 
   const onAsk = async (anchor: SelectionAnchor) => {
+    if (!isExtensionAlive()) {
+      markDead();
+      console.warn("[ai-helper]", EXTENSION_RELOAD_MSG);
+      return;
+    }
     const messageId = adapter.getMessageId(anchor.messageRoot);
     messageEls.set(messageId, anchor.messageRoot);
 
@@ -169,7 +270,16 @@ export async function bootEngine(adapter: SiteAdapter): Promise<() => void> {
       replies: [],
     };
     threads = [...threads, thread];
-    await persist();
+    try {
+      await persist();
+    } catch (err) {
+      threads = threads.filter((t) => t.id !== thread.id);
+      console.warn(
+        "[ai-helper] could not save new thread:",
+        err instanceof Error ? err.message : err
+      );
+      return;
+    }
     sidebar.setThreads(threads);
     sidebar.focusThread(thread.id);
     refreshHighlights();
@@ -185,6 +295,11 @@ export async function bootEngine(adapter: SiteAdapter): Promise<() => void> {
   adapter.onNewMessage((el) => registerMessage(el));
 
   const convPoll = setInterval(() => {
+    if (dead || !isExtensionAlive()) {
+      markDead();
+      clearInterval(convPoll);
+      return;
+    }
     const next = adapter.getConversationId();
     if (next !== conversationId) {
       conversationId = next;
