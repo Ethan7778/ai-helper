@@ -2,6 +2,22 @@
 
 Chrome extension (Manifest V3) that lets you highlight text in an AI reply, open a sidebar thread about just that snippet, and keep highlights two-way linked with thread cards. Threads persist per conversation via `chrome.storage.local`.
 
+## Share with a friend (no npm)
+
+Download the prebuilt zip from the repo:
+
+- [`releases/ai-helper-v0.1.0.zip`](./releases/ai-helper-v0.1.0.zip)
+
+Then:
+
+1. Unzip — you should see `manifest.json`, `content.js`, and `service-worker.js`
+2. Open `chrome://extensions`
+3. Enable **Developer mode**
+4. **Load unpacked** → select the unzipped folder
+5. Open/refresh [chatgpt.com](https://chatgpt.com) while logged in
+
+When a new zip is published, replace the folder contents, click **Reload** on the extension card, and refresh ChatGPT.
+
 ## Develop
 
 ```bash
