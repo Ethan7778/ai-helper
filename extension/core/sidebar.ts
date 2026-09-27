@@ -240,16 +240,6 @@ const STYLES = `
   font-size: 11px;
   color: #a33;
 }
-.banner {
-  margin: 10px;
-  padding: 10px 12px;
-  background: #fff6d8;
-  border: 1px solid #e6d48a;
-  border-radius: 8px;
-  color: #5c4b10;
-  font-size: 12px;
-  line-height: 1.4;
-}
 `;
 
 export class Sidebar {
@@ -258,13 +248,11 @@ export class Sidebar {
   private panel!: HTMLElement;
   private fab!: HTMLButtonElement;
   private listEl!: HTMLElement;
-  private bannerEl!: HTMLElement;
   private threads: Thread[] = [];
   private expanded = new Set<string>();
   private activeId: string | null = null;
   /** Start collapsed so we don't cover ChatGPT chrome until needed. */
   private collapsed = true;
-  private banner: string | null = null;
   private callbacks: SidebarCallbacks;
 
   constructor(callbacks: SidebarCallbacks) {
@@ -284,19 +272,6 @@ export class Sidebar {
   setThreads(threads: Thread[]): void {
     this.threads = threads;
     this.renderList();
-  }
-
-  setBanner(message: string | null): void {
-    this.banner = message;
-    if (!this.bannerEl) return;
-    if (message) {
-      this.bannerEl.textContent = message;
-      this.bannerEl.style.display = "block";
-      this.setCollapsed(false);
-    } else {
-      this.bannerEl.textContent = "";
-      this.bannerEl.style.display = "none";
-    }
   }
 
   focusThread(threadId: string): void {
@@ -362,12 +337,10 @@ export class Sidebar {
         <span>Highlight threads</span>
         <button type="button" class="collapse-btn" title="Collapse" aria-label="Collapse">›</button>
       </div>
-      <div class="banner" style="display:none"></div>
       <div class="list"></div>
     `;
     this.shadow.appendChild(this.panel);
     this.listEl = this.panel.querySelector(".list") as HTMLElement;
-    this.bannerEl = this.panel.querySelector(".banner") as HTMLElement;
 
     this.panel.querySelector(".collapse-btn")?.addEventListener("click", () => {
       this.setCollapsed(true);
