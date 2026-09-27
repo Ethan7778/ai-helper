@@ -330,27 +330,9 @@ function createAskButton(
   return button;
 }
 
-/** Find ChatGPT's native "Ask ChatGPT" control and its toolbar row. */
-function findNativeAskToolbar(): {
-  button: HTMLElement;
-  row: HTMLElement;
-} | null {
-  const candidates = Array.from(
-    document.querySelectorAll<HTMLElement>("button, [role='button'], a")
-  );
-  const native = candidates.find((el) => {
-    if (el.dataset.aiHelperAsk) return false;
-    const txt = (el.textContent || "").replace(/\s+/g, " ").trim();
-    return txt === "Ask ChatGPT" || txt.startsWith("Ask ChatGPT");
-  });
-  if (!native?.parentElement) return null;
-  return { button: native, row: native.parentElement };
-}
-
 /**
- * Always show a floating "Ask about this" near the selection.
- * Also try injecting next to ChatGPT's toolbar when present (bonus), but
- * never rely on that alone — React often remounts and drops injected nodes.
+ * Show a single floating "Ask about this" near the selection.
+ * (We intentionally do not inject into ChatGPT's toolbar — that caused duplicates.)
  */
 export function attachSelectionHandler(
   getMessageRoots: () => HTMLElement[],
@@ -358,21 +340,9 @@ export function attachSelectionHandler(
 ): () => void {
   let button: HTMLButtonElement | null = null;
   let pending: SelectionAnchor | null = null;
-  let toolbarObserver: MutationObserver | null = null;
-  let injectTimer: ReturnType<typeof setTimeout> | null = null;
   let selectionTimer: ReturnType<typeof setTimeout> | null = null;
 
-  const clearObserver = () => {
-    toolbarObserver?.disconnect();
-    toolbarObserver = null;
-    if (injectTimer) {
-      clearTimeout(injectTimer);
-      injectTimer = null;
-    }
-  };
-
   const hide = () => {
-    clearObserver();
     document
       .querySelectorAll<HTMLElement>("[data-ai-helper-ask='1']")
       .forEach((el) => el.remove());
@@ -407,58 +377,10 @@ export function attachSelectionHandler(
     document.body.appendChild(button);
   };
 
-  const tryInjectIntoToolbar = (): boolean => {
-    if (!pending) return false;
-    if (document.getElementById(ASK_BUTTON_INJECTED)) return true;
-
-    const found = findNativeAskToolbar();
-    if (!found) return false;
-
-    const injected = createAskButton(() => pending, onAsk, hide, true);
-    if (found.button.nextSibling) {
-      found.button.parentElement?.insertBefore(
-        injected,
-        found.button.nextSibling
-      );
-    } else {
-      found.row.appendChild(injected);
-    }
-
-    try {
-      const cs = getComputedStyle(found.button);
-      injected.style.fontSize = cs.fontSize || injected.style.fontSize;
-      injected.style.borderRadius =
-        cs.borderRadius || injected.style.borderRadius;
-      injected.style.padding = cs.padding || injected.style.padding;
-      injected.style.fontFamily = cs.fontFamily || injected.style.fontFamily;
-    } catch {
-      // ignore style copy failures
-    }
-    return true;
-  };
-
   const show = (anchor: SelectionAnchor) => {
-    // Keep pending across re-shows so we don't flicker the floating button away.
     pending = anchor;
+    document.getElementById(ASK_BUTTON_INJECTED)?.remove();
     placeFloating(anchor);
-    tryInjectIntoToolbar();
-
-    if (!toolbarObserver) {
-      toolbarObserver = new MutationObserver(() => {
-        if (!pending) return;
-        // Re-inject if ChatGPT remounted the toolbar and dropped our node.
-        tryInjectIntoToolbar();
-        // Always ensure floating exists as the reliable path.
-        if (!document.getElementById(ASK_BUTTON_ID)) {
-          placeFloating(pending);
-        }
-      });
-      toolbarObserver.observe(document.body, {
-        childList: true,
-        subtree: true,
-      });
-      injectTimer = setTimeout(() => clearObserver(), 4000);
-    }
   };
 
   const refreshFromSelection = () => {
@@ -472,14 +394,10 @@ export function attachSelectionHandler(
     if (pending && document.getElementById(ASK_BUTTON_ID)) {
       return;
     }
-    if (pending && document.getElementById(ASK_BUTTON_INJECTED)) {
+    if (pending) {
       placeFloating(pending);
       return;
     }
-    const overAsk = Array.from(
-      document.querySelectorAll<HTMLElement>("[data-ai-helper-ask='1']")
-    );
-    if (overAsk.some((el) => el.matches(":hover"))) return;
   };
 
   const scheduleRefresh = (delayMs: number) => {
@@ -550,7 +468,6 @@ export function attachSelectionHandler(
     if (live) pending = live;
     else pending = { ...pending, rect };
     placeFloating(pending);
-    tryInjectIntoToolbar();
   };
 
   document.addEventListener("mouseup", onMouseUp, true);
