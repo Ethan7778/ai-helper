@@ -71,10 +71,66 @@ export async function saveThreads(
           reject(asStorageError(new Error(msg)));
           return;
         }
+        // Index any side conversation ids so we can warn if the user opens one.
+        const sideIds = threads
+          .map((t) => t.sideConversationId)
+          .filter((id): id is string => Boolean(id));
+        if (sideIds.length) {
+          void rememberSideConversations(siteId, sideIds);
+        }
         resolve();
       });
     } catch (err) {
       reject(asStorageError(err));
+    }
+  });
+}
+
+function sideIndexKey(siteId: string): string {
+  return `${siteId}:__side_conversation_ids`;
+}
+
+/** Remember ChatGPT conversation ids that were created only for highlight follow-ups. */
+export async function rememberSideConversations(
+  siteId: string,
+  ids: string[]
+): Promise<void> {
+  const fresh = ids.map((id) => id.trim()).filter(Boolean);
+  if (!fresh.length || !isExtensionAlive()) return;
+  const key = sideIndexKey(siteId);
+  return new Promise((resolve) => {
+    try {
+      chrome.storage.local.get([key], (result) => {
+        const prev = Array.isArray(result[key])
+          ? (result[key] as string[])
+          : [];
+        const merged = Array.from(new Set([...prev, ...fresh]));
+        chrome.storage.local.set({ [key]: merged }, () => resolve());
+      });
+    } catch {
+      resolve();
+    }
+  });
+}
+
+/** True if this ChatGPT conversation id is one of our helper side chats. */
+export async function isKnownSideConversation(
+  siteId: string,
+  conversationId: string
+): Promise<boolean> {
+  if (!conversationId || conversationId.startsWith("anon-")) return false;
+  if (!isExtensionAlive()) return false;
+  const key = sideIndexKey(siteId);
+  return new Promise((resolve) => {
+    try {
+      chrome.storage.local.get([key], (result) => {
+        const ids = Array.isArray(result[key])
+          ? (result[key] as string[])
+          : [];
+        resolve(ids.includes(conversationId));
+      });
+    } catch {
+      resolve(false);
     }
   });
 }

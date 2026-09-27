@@ -8,12 +8,16 @@ import { Sidebar, sendAskFollowUp } from "./sidebar";
 import {
   EXTENSION_RELOAD_MSG,
   isExtensionAlive,
+  isKnownSideConversation,
   loadThreads,
+  rememberSideConversations,
   saveThreads,
 } from "./storage";
 import type { SiteAdapter, Thread } from "./types";
 
 const EXCERPT_MAX_CHARS = 4000;
+const HELPER_CHAT_BANNER =
+  "This looks like a highlight helper chat from the extension — not your main conversation. Go back to the original ChatGPT chat before adding threads.";
 
 function createId(): string {
   if (typeof crypto !== "undefined" && crypto.randomUUID) {
@@ -29,7 +33,13 @@ function createId(): string {
  */
 export async function bootEngine(adapter: SiteAdapter): Promise<() => void> {
   let conversationId = adapter.getConversationId();
-  let threads: Thread[] = await loadThreads(adapter.siteId, conversationId);
+  let helperChat = await isKnownSideConversation(
+    adapter.siteId,
+    conversationId
+  );
+  let threads: Thread[] = helperChat
+    ? []
+    : await loadThreads(adapter.siteId, conversationId);
   const messageEls = new Map<string, HTMLElement>();
   let dead = false;
 
@@ -112,6 +122,9 @@ export async function bootEngine(adapter: SiteAdapter): Promise<() => void> {
       }
     },
     onSend: async (thread, question, onPartial) => {
+      if (helperChat) {
+        return { ok: false, error: HELPER_CHAT_BANNER };
+      }
       if (!isExtensionAlive()) {
         markDead();
         return { ok: false, error: EXTENSION_RELOAD_MSG };
@@ -167,6 +180,11 @@ export async function bootEngine(adapter: SiteAdapter): Promise<() => void> {
               { role: "assistant", text: result.reply, ts: Date.now() },
             ],
           };
+          if (result.sideConversationId) {
+            void rememberSideConversations(adapter.siteId, [
+              result.sideConversationId,
+            ]);
+          }
           try {
             await persist();
           } catch (err) {
@@ -183,8 +201,10 @@ export async function bootEngine(adapter: SiteAdapter): Promise<() => void> {
   });
 
   sidebar.setThreads(threads);
+  sidebar.setBanner(helperChat ? HELPER_CHAT_BANNER : null);
 
   const registerMessage = (el: HTMLElement) => {
+    if (helperChat) return;
     const messageId = adapter.getMessageId(el);
     messageEls.set(messageId, el);
 
@@ -204,6 +224,11 @@ export async function bootEngine(adapter: SiteAdapter): Promise<() => void> {
   };
 
   const onAsk = async (anchor: SelectionAnchor) => {
+    if (helperChat) {
+      sidebar.setBanner(HELPER_CHAT_BANNER);
+      console.warn("[ai-helper]", HELPER_CHAT_BANNER);
+      return;
+    }
     if (!isExtensionAlive()) {
       markDead();
       console.warn("[ai-helper]", EXTENSION_RELOAD_MSG);
@@ -255,13 +280,31 @@ export async function bootEngine(adapter: SiteAdapter): Promise<() => void> {
   };
 
   const detachSelection = attachSelectionHandler(
-    () => adapter.getMessageContainers(),
+    () => (helperChat ? [] : adapter.getMessageContainers()),
     (anchor) => {
       void onAsk(anchor);
     }
   );
 
   adapter.onNewMessage((el) => registerMessage(el));
+
+  const switchConversation = async (next: string) => {
+    conversationId = next;
+    helperChat = await isKnownSideConversation(adapter.siteId, next);
+    messageEls.clear();
+    if (helperChat) {
+      threads = [];
+      sidebar.setThreads(threads);
+      sidebar.setBanner(HELPER_CHAT_BANNER);
+      return;
+    }
+    sidebar.setBanner(null);
+    threads = await loadThreads(adapter.siteId, conversationId);
+    sidebar.setThreads(threads);
+    for (const el of adapter.getMessageContainers()) {
+      registerMessage(el);
+    }
+  };
 
   const convPoll = setInterval(() => {
     if (dead || !isExtensionAlive()) {
@@ -271,20 +314,22 @@ export async function bootEngine(adapter: SiteAdapter): Promise<() => void> {
     }
     const next = adapter.getConversationId();
     if (next !== conversationId) {
-      conversationId = next;
-      void (async () => {
-        threads = await loadThreads(adapter.siteId, conversationId);
-        messageEls.clear();
-        sidebar.setThreads(threads);
-        for (const el of adapter.getMessageContainers()) {
-          registerMessage(el);
-        }
-      })();
+      void switchConversation(next);
     }
   }, 1000);
 
+  // Index any side ids already stored on loaded threads.
+  const existingSideIds = threads
+    .map((t) => t.sideConversationId)
+    .filter((id): id is string => Boolean(id));
+  if (existingSideIds.length) {
+    void rememberSideConversations(adapter.siteId, existingSideIds);
+  }
+
   console.info(
-    `[ai-helper] Engine started for site="${adapter.siteId}" conversation="${conversationId}" (${threads.length} threads loaded)`
+    `[ai-helper] Engine started for site="${adapter.siteId}" conversation="${conversationId}" (${threads.length} threads loaded)${
+      helperChat ? " [helper-chat]" : ""
+    }`
   );
 
   return () => {

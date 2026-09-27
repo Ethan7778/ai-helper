@@ -634,8 +634,10 @@ async function parseConversationStream(
   res: Response,
   accessToken: string,
   userAgent: string,
-  onPartial?: (text: string) => void
+  onPartial?: (text: string) => void,
+  opts?: { allowPoll?: boolean }
 ): Promise<{ reply: string; conversationId?: string; messageId?: string }> {
+  const allowPoll = opts?.allowPoll !== false;
   const contentType = res.headers.get("content-type") || "";
 
   if (contentType.includes("application/json")) {
@@ -691,7 +693,8 @@ async function parseConversationStream(
     };
   }
 
-  // Race websocket + poll so we don't sit forever on a quiet WS.
+  // Race websocket (+ optional poll). Temporary side chats skip poll — they
+  // usually never show up on GET /conversation.
   const tasks: Promise<{
     reply: string;
     messageId?: string;
@@ -712,7 +715,7 @@ async function parseConversationStream(
       }))
     );
   }
-  if (parsed.conversationId) {
+  if (allowPoll && parsed.conversationId) {
     tasks.push(
       pollConversationForReply(
         accessToken,
@@ -742,7 +745,7 @@ async function parseConversationStream(
   console.info(
     `${LOG} Recovering handoff via ${[
       parsed.topicId ? "websocket" : null,
-      parsed.conversationId ? "poll" : null,
+      allowPoll && parsed.conversationId ? "poll" : null,
     ]
       .filter(Boolean)
       .join("+")}`
@@ -796,7 +799,9 @@ async function postConversation(
   onPartial?: (text: string) => void
 ): Promise<CompleteResult> {
   const messageId = uuid();
-  const parentMessageId = sideParentMessageId || "client-created-root";
+  const parentMessageId =
+    (sideParentMessageId && sideParentMessageId.trim()) ||
+    "client-created-root";
 
   const body: Record<string, unknown> = {
     action: "next",
@@ -814,9 +819,10 @@ async function postConversation(
     timezone_offset_min: new Date().getTimezoneOffset(),
     timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
     conversation_mode: { kind: "primary_assistant" },
-    // Must stay false so the turn is persisted and recoverable after handoff.
-    // Temporary chats (true) often never appear for GET /conversation polling.
-    history_and_training_disabled: false,
+    // Temporary so helper turns do NOT appear in ChatGPT's main history
+    // (users were opening those and adding highlights to the wrong chat).
+    // Handoff recovery uses the WebSocket topic; polling often cannot see temps.
+    history_and_training_disabled: true,
     force_paragen: false,
     force_rate_limit: false,
     supports_buffering: true,
@@ -872,12 +878,14 @@ async function postConversation(
       res,
       accessToken,
       userAgent,
-      onPartial
+      onPartial,
+      { allowPoll: false }
     );
     return {
       reply: parsed.reply,
       conversationId: parsed.conversationId || sideConversationId || "",
-      parentMessageId: parsed.messageId || messageId,
+      // Next turn's parent must be the assistant leaf — never the user message we just sent.
+      parentMessageId: parsed.messageId || sideParentMessageId || "",
       model,
     };
   }

@@ -52,8 +52,8 @@ Follow-up calls enter the service worker, then run in the content script (same-o
 
 Sidebar questions use **your logged-in ChatGPT session**, not an OpenAI API key:
 
-- Each highlight thread gets its own side conversation (main chat UI is not injected into).
-- Side conversations are **persisted** (needed for handoff recovery) and may appear in ChatGPT history.
+- Each highlight thread uses a **temporary** side conversation so answers don’t appear in ChatGPT’s main history (and don’t get confused with your real chat).
+- Follow-ups in a thread reuse that side conversation when ChatGPT still allows it; otherwise a fresh temporary turn is started.
 - This is **unofficial / ToS-grey**. Endpoints, auth, and the sentinel/proof-of-work gate change without notice — expect breakage.
 - Failures should surface in the sidebar and as `[ai-helper][chatgpt-session]` logs in DevTools.
 - Local SSE fixture tests: `npm run test:sse`
