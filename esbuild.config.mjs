@@ -14,6 +14,9 @@ const common = {
   sourcemap: true,
   target: "es2020",
   logLevel: "info",
+  define: {
+    __AI_HELPER_BUILD_TIME__: JSON.stringify(new Date().toISOString()),
+  },
 };
 
 async function build() {

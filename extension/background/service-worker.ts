@@ -2,8 +2,9 @@ import type {
   AskFollowUpRequest,
   AskFollowUpResponse,
 } from "../core/types";
+import { createLogger } from "../core/log";
 
-const LOG = "[ai-helper][chatgpt-session]";
+const log = createLogger("service-worker");
 
 /**
  * Background service worker.
@@ -25,8 +26,8 @@ chrome.runtime.onMessage.addListener(
 
     if (message.siteId === "chatgpt") {
       // Should not normally arrive — content script handles ChatGPT locally.
-      console.warn(
-        `${LOG} Received chatgpt ask-follow-up in SW; content script should handle this directly.`
+      log.warn(
+        `Received chatgpt ask-follow-up in SW; content script should handle this directly.`
       );
       sendResponse({
         ok: false,
@@ -44,6 +45,4 @@ chrome.runtime.onMessage.addListener(
   }
 );
 
-console.info(
-  "[ai-helper] Service worker ready (ChatGPT follow-ups run in-page)"
-);
+log.debug("Service worker ready (ChatGPT follow-ups run in-page)");

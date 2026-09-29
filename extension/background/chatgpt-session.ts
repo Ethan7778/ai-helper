@@ -4,14 +4,12 @@
  */
 import { sha3_512 } from "js-sha3";
 import { buildFollowUpPrompt } from "../core/prompt";
-import {
-  extractLatestAssistantFromConversation,
-  parseConversationSseText,
-} from "../core/sse-parse";
+import { createLogger } from "../core/log";
+import { parseConversationSseText } from "../core/sse-parse";
 import { cleanChatGptText } from "../core/text-clean";
 import type { AskFollowUpRequest, AskFollowUpResponse } from "../core/types";
 
-const LOG = "[ai-helper][chatgpt-session]";
+const log = createLogger("chatgpt-session");
 const REQUIREMENTS_URL =
   "https://chatgpt.com/backend-api/sentinel/chat-requirements";
 const CONVERSATION_URLS = [
@@ -19,7 +17,6 @@ const CONVERSATION_URLS = [
   "https://chatgpt.com/backend-api/conversation",
 ];
 const MODELS_URL = "https://chatgpt.com/backend-api/models";
-const CONVERSATION_DETAIL_URL = "https://chatgpt.com/backend-api/conversation";
 
 export interface SessionCredentials {
   accessToken: string;
@@ -88,47 +85,37 @@ function compact(arr: unknown[], start = 0, end = arr.length): string {
   return JSON.stringify(arr.slice(start, end)).slice(1, -1);
 }
 
-function parseTime(): string {
-  const now = new Date(Date.now() - 5 * 3600 * 1000);
-  const days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-  const months = [
-    "Jan",
-    "Feb",
-    "Mar",
-    "Apr",
-    "May",
-    "Jun",
-    "Jul",
-    "Aug",
-    "Sep",
-    "Oct",
-    "Nov",
-    "Dec",
-  ];
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return (
-    `${days[now.getUTCDay()]} ${months[now.getUTCMonth()]} ${pad(now.getUTCDate())} ` +
-    `${now.getUTCFullYear()} ${pad(now.getUTCHours())}:${pad(now.getUTCMinutes())}:${pad(
-      now.getUTCSeconds()
-    )} GMT-0500 (Eastern Standard Time)`
-  );
+function browserLanguage(): string {
+  return (typeof navigator !== "undefined" && navigator.language) || "en-US";
 }
 
+/** PoW fingerprint from the real browser (screen, local time zone, locale, cores). */
 function buildConfig(userAgent: string): unknown[] {
   const perf =
     typeof performance !== "undefined" && performance.now
       ? performance.now()
       : Math.random() * 1000;
+  const screenSum =
+    typeof screen !== "undefined" && screen.width
+      ? screen.width + screen.height
+      : 1920 + 1080;
+  const language = browserLanguage();
+  const languages =
+    typeof navigator !== "undefined" && navigator.languages?.length
+      ? navigator.languages.join(",")
+      : language;
+  const cores =
+    (typeof navigator !== "undefined" && navigator.hardwareConcurrency) || 8;
   return [
-    1920 + 1080,
-    parseTime(),
+    screenSum,
+    new Date().toString(),
     4294705152,
     0,
     userAgent,
     "",
     "",
-    "en-US",
-    "en-US",
+    language,
+    languages,
     0,
     "webdriver−false",
     "location",
@@ -136,7 +123,7 @@ function buildConfig(userAgent: string): unknown[] {
     perf,
     uuid(),
     "",
-    8,
+    cores,
     Date.now() - perf,
   ];
 }
@@ -204,8 +191,8 @@ async function fetchSentinelTokens(
 
   if (!res.ok) {
     const body = await res.text().catch(() => "");
-    console.error(
-      `${LOG} chat-requirements failed: HTTP ${res.status}`,
+    log.error(
+      `chat-requirements failed: HTTP ${res.status}`,
       body.slice(0, 300)
     );
     throw new Error(
@@ -219,7 +206,7 @@ async function fetchSentinelTokens(
   };
 
   if (!data.token) {
-    console.error(`${LOG} chat-requirements response missing token`);
+    log.error(`chat-requirements response missing token`);
     throw new Error("ChatGPT session gate returned no token.");
   }
 
@@ -251,7 +238,7 @@ async function resolveModel(
       },
     });
     if (!res.ok) {
-      console.warn(`${LOG} models fetch HTTP ${res.status}; using auto`);
+      log.warn(`models fetch HTTP ${res.status}; using auto`);
       return "auto";
     }
     const data = (await res.json()) as {
@@ -259,18 +246,14 @@ async function resolveModel(
     };
     const slug = data.models?.[0]?.slug;
     if (slug) {
-      console.info(`${LOG} Using model "${slug}"`);
+      log.debug(`Using model "${slug}"`);
       return slug;
     }
   } catch (err) {
-    console.warn(`${LOG} models fetch failed; using auto`, err);
+    log.warn(`models fetch failed; using auto`, err);
   }
-  console.info(`${LOG} Using model "auto"`);
+  log.debug(`Using model "auto"`);
   return "auto";
-}
-
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function getChatGptWebSocketUrl(
@@ -344,8 +327,8 @@ async function recoverViaWebSocket(
   } catch {
     // keep raw
   }
-  console.info(
-    `${LOG} Opening handoff WebSocket host=${host} topic=${topicId}`
+  log.debug(
+    `Opening handoff WebSocket host=${host} topic=${topicId}`
   );
 
   return new Promise((resolve, reject) => {
@@ -373,8 +356,8 @@ async function recoverViaWebSocket(
         // ignore
       }
       if (ok && reply.trim()) {
-        console.info(
-          `${LOG} WebSocket recovered reply (${reply.length} chars, frames=${framesSeen}, encoded=${encodedSeen})`
+        log.debug(
+          `WebSocket recovered reply (${reply.length} chars, frames=${framesSeen}, encoded=${encodedSeen})`
         );
         resolve({ reply, messageId, conversationId });
       } else {
@@ -401,7 +384,7 @@ async function recoverViaWebSocket(
     const ws = new WebSocket(wsUrl);
 
     ws.onopen = () => {
-      console.info(`${LOG} WebSocket open — subscribing to ${topicId}`);
+      log.debug(`WebSocket open — subscribing to ${topicId}`);
       ws.send(
         JSON.stringify([
           {
@@ -422,13 +405,13 @@ async function recoverViaWebSocket(
     };
 
     ws.onerror = () => {
-      console.warn(`${LOG} WebSocket error event`);
+      log.warn(`WebSocket error event`);
       finish(false, "WebSocket handoff connection error");
     };
 
     ws.onclose = (ev) => {
-      console.info(
-        `${LOG} WebSocket closed code=${ev.code} reason=${ev.reason || "none"} frames=${framesSeen} encoded=${encodedSeen}`
+      log.debug(
+        `WebSocket closed code=${ev.code} reason=${ev.reason || "none"} frames=${framesSeen} encoded=${encodedSeen}`
       );
       if (!settled) {
         if (reply.trim()) finish(true);
@@ -447,8 +430,8 @@ async function recoverViaWebSocket(
         const parsed = JSON.parse(String(ev.data));
         frames = Array.isArray(parsed) ? parsed : [parsed];
       } catch {
-        console.warn(
-          `${LOG} WebSocket non-JSON frame len=${String(ev.data).length}`
+        log.warn(
+          `WebSocket non-JSON frame len=${String(ev.data).length}`
         );
         return;
       }
@@ -460,7 +443,7 @@ async function recoverViaWebSocket(
             ? String((frame as { type?: unknown }).type || "unknown")
             : typeof frame;
         if (framesSeen <= 10) {
-          console.info(`${LOG} WS frame#${framesSeen} type=${fType}`);
+          log.debug(`WS frame#${framesSeen} type=${fType}`);
         }
 
         const encodedChunks = collectEncodedSseFromWsFrame(frame);
@@ -549,100 +532,17 @@ function extractAssistantFromUnknownFrame(
   return null;
 }
 
-/**
- * After a stream handoff, ChatGPT finishes the turn server-side.
- * Poll conversation detail until the assistant message is ready.
- */
-async function pollConversationForReply(
-  accessToken: string,
-  userAgent: string,
-  conversationId: string,
-  options?: { timeoutMs?: number; intervalMs?: number }
-): Promise<{ reply: string; messageId?: string }> {
-  const timeoutMs = options?.timeoutMs ?? 60_000;
-  const intervalMs = options?.intervalMs ?? 1_500;
-  const started = Date.now();
-  let consecutiveErrors = 0;
-  let lastStatus = "";
-
-  console.info(
-    `${LOG} Polling conversation ${conversationId} for reply…`
-  );
-
-  while (Date.now() - started < timeoutMs) {
-    await delay(intervalMs);
-    try {
-      const url =
-        `${CONVERSATION_DETAIL_URL}/${encodeURIComponent(conversationId)}` +
-        `?include_visually_hidden_messages=true&include_widget_state=true`;
-      const res = await fetch(url, {
-        credentials: "include",
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          Accept: "application/json",
-          "User-Agent": userAgent,
-        },
-      });
-      if (!res.ok) {
-        consecutiveErrors += 1;
-        lastStatus = `HTTP ${res.status}`;
-        console.warn(
-          `${LOG} poll conversation HTTP ${res.status} (${consecutiveErrors})`
-        );
-        if (consecutiveErrors >= 8) {
-          throw new Error(
-            `Polling ChatGPT conversation failed repeatedly (${lastStatus}).`
-          );
-        }
-        continue;
-      }
-      consecutiveErrors = 0;
-      const data = await res.json();
-      const found = extractLatestAssistantFromConversation(data);
-      if (!found) {
-        lastStatus = "no assistant message yet";
-        continue;
-      }
-      lastStatus = found.status || "unknown";
-      if (
-        found.status === "finished_successfully" ||
-        (found.text.trim().length > 0 && found.status !== "in_progress")
-      ) {
-        console.info(
-          `${LOG} Poll recovered reply (${found.text.length} chars, status=${found.status})`
-        );
-        return { reply: found.text, messageId: found.messageId };
-      }
-    } catch (err) {
-      consecutiveErrors += 1;
-      lastStatus = err instanceof Error ? err.message : String(err);
-      console.warn(`${LOG} poll error:`, lastStatus);
-      if (consecutiveErrors >= 8) {
-        throw new Error(
-          `Polling ChatGPT conversation failed repeatedly (${lastStatus}).`
-        );
-      }
-    }
-  }
-
-  throw new Error(
-    `Timed out waiting for ChatGPT reply after stream handoff (last=${lastStatus}).`
-  );
-}
-
 async function parseConversationStream(
   res: Response,
   accessToken: string,
   userAgent: string,
-  onPartial?: (text: string) => void,
-  opts?: { allowPoll?: boolean }
+  onPartial?: (text: string) => void
 ): Promise<{ reply: string; conversationId?: string; messageId?: string }> {
-  const allowPoll = opts?.allowPoll !== false;
   const contentType = res.headers.get("content-type") || "";
 
   if (contentType.includes("application/json")) {
     const data = await res.json();
-    console.error(`${LOG} Unexpected JSON response (not SSE)`, data);
+    log.error(`Unexpected JSON response (not SSE)`, data);
     throw new Error(
       typeof data?.detail === "string"
         ? data.detail
@@ -677,8 +577,8 @@ async function parseConversationStream(
 
   const parsed = parseConversationSseText(text);
 
-  console.info(
-    `${LOG} SSE events=[${parsed.eventTypes.join(",") || "none"}] ` +
+  log.debug(
+    `SSE events=[${parsed.eventTypes.join(",") || "none"}] ` +
       `handedOff=${parsed.handedOff} replyLen=${parsed.reply.length} ` +
       `conversationId=${parsed.conversationId || "none"} ` +
       `topicId=${parsed.topicId || "none"}`
@@ -693,99 +593,37 @@ async function parseConversationStream(
     };
   }
 
-  // Race websocket (+ optional poll). Temporary side chats skip poll — they
-  // usually never show up on GET /conversation.
-  const tasks: Promise<{
-    reply: string;
-    messageId?: string;
-    conversationId?: string;
-    via: string;
-  }>[] = [];
-
-  if (parsed.topicId) {
-    tasks.push(
-      recoverViaWebSocket(
-        accessToken,
-        userAgent,
-        parsed.topicId,
-        onPartial
-      ).then((r) => ({
-        ...r,
-        via: "websocket",
-      }))
-    );
-  }
-  if (allowPoll && parsed.conversationId) {
-    tasks.push(
-      pollConversationForReply(
-        accessToken,
-        userAgent,
-        parsed.conversationId
-      ).then((r) => {
-        emit(r.reply);
-        return {
-          reply: r.reply,
-          messageId: r.messageId,
-          conversationId: parsed.conversationId,
-          via: "poll",
-        };
-      })
-    );
-  }
-
-  if (tasks.length === 0) {
-    console.error(
-      `${LOG} Empty SSE with no topic/conversation to resume; head=${text.slice(0, 400)}`
+  // Temporary side chats never show up on GET /conversation, so the
+  // WebSocket turn topic is the only way to recover a handed-off stream.
+  if (!parsed.topicId) {
+    log.error(
+      `Empty SSE with no topic to resume; head=${text.slice(0, 400)}`
     );
     throw new Error(
-      "ChatGPT handed off the stream without a topic or conversation id. Reload and try again."
+      "ChatGPT handed off the stream without a topic id. Reload and try again."
     );
   }
 
-  console.info(
-    `${LOG} Recovering handoff via ${[
-      parsed.topicId ? "websocket" : null,
-      allowPoll && parsed.conversationId ? "poll" : null,
-    ]
-      .filter(Boolean)
-      .join("+")}`
-  );
-
+  log.debug("Recovering handoff via websocket");
   try {
-    const winner = await raceFirst(tasks);
-    console.info(`${LOG} Handoff recovered via ${winner.via}`);
-    emit(winner.reply);
+    const recovered = await recoverViaWebSocket(
+      accessToken,
+      userAgent,
+      parsed.topicId,
+      onPartial
+    );
+    log.debug("Handoff recovered via websocket");
+    emit(recovered.reply);
     return {
-      reply: winner.reply,
-      conversationId: winner.conversationId || parsed.conversationId,
-      messageId: winner.messageId || parsed.messageId,
+      reply: recovered.reply,
+      conversationId: recovered.conversationId || parsed.conversationId,
+      messageId: recovered.messageId || parsed.messageId,
     };
   } catch (err) {
     throw new Error(
       `Handoff recovery failed: ${err instanceof Error ? err.message : String(err)}`
     );
   }
-}
-
-/** First fulfilled promise wins; if all reject, throw combined messages. */
-function raceFirst<T>(tasks: Promise<T>[]): Promise<T> {
-  return new Promise((resolve, reject) => {
-    let pending = tasks.length;
-    const errors: string[] = [];
-    if (pending === 0) {
-      reject(new Error("no recovery tasks"));
-      return;
-    }
-    for (const task of tasks) {
-      task.then(resolve, (err) => {
-        errors.push(err instanceof Error ? err.message : String(err));
-        pending -= 1;
-        if (pending === 0) {
-          reject(new Error(errors.join(" | ")));
-        }
-      });
-    }
-  });
 }
 
 async function postConversation(
@@ -841,7 +679,7 @@ async function postConversation(
     "Content-Type": "application/json",
     Accept: "text/event-stream",
     "User-Agent": userAgent,
-    "OAI-Language": "en-US",
+    "OAI-Language": browserLanguage(),
     "Openai-Sentinel-Chat-Requirements-Token": sentinel.chatRequirements,
   };
   if (sentinel.proof) {
@@ -860,8 +698,8 @@ async function postConversation(
 
     if (!res.ok) {
       const errText = await res.text().catch(() => "");
-      console.error(
-        `${LOG} conversation POST ${url} → HTTP ${res.status}`,
+      log.error(
+        `conversation POST ${url} → HTTP ${res.status}`,
         errText.slice(0, 400)
       );
       lastError = `ChatGPT conversation failed (HTTP ${res.status}). Reload and re-login if needed.`;
@@ -878,8 +716,7 @@ async function postConversation(
       res,
       accessToken,
       userAgent,
-      onPartial,
-      { allowPoll: false }
+      onPartial
     );
     return {
       reply: parsed.reply,
@@ -926,8 +763,8 @@ export async function completeViaChatGptSession(
     );
 
     if (!result.conversationId) {
-      console.warn(
-        `${LOG} Reply ok but conversation_id missing; follow-ups in this thread may start a new side chat.`
+      log.warn(
+        `Reply ok but conversation_id missing; follow-ups in this thread may start a new side chat.`
       );
     }
 
@@ -939,7 +776,7 @@ export async function completeViaChatGptSession(
     };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    console.error(`${LOG} complete failed:`, message);
+    log.error(`complete failed:`, message);
     return { ok: false, error: message };
   }
 }

@@ -1,4 +1,7 @@
+import { createLogger } from "./log";
 import type { Thread } from "./types";
+
+const log = createLogger("storage");
 
 export const EXTENSION_RELOAD_MSG =
   "Extension was reloaded — refresh this ChatGPT tab to keep using Highlight threads.";
@@ -35,18 +38,17 @@ export async function loadThreads(
     try {
       chrome.storage.local.get([key], (result) => {
         if (chrome.runtime.lastError) {
-          console.error(
-            "[ai-helper] storage load failed:",
-            chrome.runtime.lastError.message
-          );
+          log.error("storage load failed:", chrome.runtime.lastError.message);
           resolve([]);
           return;
         }
         const value = result[key];
-        resolve(Array.isArray(value) ? (value as Thread[]) : []);
+        const threads = Array.isArray(value) ? (value as Thread[]) : [];
+        log.debug(`Loaded ${threads.length} thread(s) from "${key}"`);
+        resolve(threads);
       });
     } catch (err) {
-      console.error("[ai-helper] storage load threw:", asStorageError(err).message);
+      log.error("storage load threw:", asStorageError(err).message);
       resolve([]);
     }
   });
@@ -67,17 +69,11 @@ export async function saveThreads(
       chrome.storage.local.set({ [key]: threads }, () => {
         if (chrome.runtime.lastError) {
           const msg = chrome.runtime.lastError.message || "storage save failed";
-          console.error("[ai-helper] storage save failed:", msg);
+          log.error("storage save failed:", msg);
           reject(asStorageError(new Error(msg)));
           return;
         }
-        // Index any side conversation ids so we can warn if the user opens one.
-        const sideIds = threads
-          .map((t) => t.sideConversationId)
-          .filter((id): id is string => Boolean(id));
-        if (sideIds.length) {
-          void rememberSideConversations(siteId, sideIds);
-        }
+        log.debug(`Saved ${threads.length} thread(s) to "${key}"`);
         resolve();
       });
     } catch (err) {
@@ -86,51 +82,45 @@ export async function saveThreads(
   });
 }
 
-function sideIndexKey(siteId: string): string {
-  return `${siteId}:__side_conversation_ids`;
+export interface StorageSummary {
+  bytesInUse: number | null;
+  conversations: {
+    key: string;
+    threads: number;
+    replies: number;
+    quotes: string[];
+  }[];
 }
 
-/** Remember ChatGPT conversation ids that were created only for highlight follow-ups. */
-export async function rememberSideConversations(
-  siteId: string,
-  ids: string[]
-): Promise<void> {
-  const fresh = ids.map((id) => id.trim()).filter(Boolean);
-  if (!fresh.length || !isExtensionAlive()) return;
-  const key = sideIndexKey(siteId);
+/** Counts and short quote previews for diagnostics; never includes reply bodies. */
+export async function summarizeStorage(siteId: string): Promise<StorageSummary> {
+  if (!isExtensionAlive()) return { bytesInUse: null, conversations: [] };
   return new Promise((resolve) => {
     try {
-      chrome.storage.local.get([key], (result) => {
-        const prev = Array.isArray(result[key])
-          ? (result[key] as string[])
-          : [];
-        const merged = Array.from(new Set([...prev, ...fresh]));
-        chrome.storage.local.set({ [key]: merged }, () => resolve());
+      chrome.storage.local.get(null, (all) => {
+        const conversations: StorageSummary["conversations"] = [];
+        for (const [key, value] of Object.entries(all ?? {})) {
+          if (!key.startsWith(`${siteId}:`) || !Array.isArray(value)) continue;
+          const threads = value as Thread[];
+          conversations.push({
+            key,
+            threads: threads.length,
+            replies: threads.reduce((n, t) => n + (t.replies?.length ?? 0), 0),
+            quotes: threads
+              .slice(0, 5)
+              .map((t) => (t.quotedText ?? "").slice(0, 40)),
+          });
+        }
+        chrome.storage.local.getBytesInUse(null, (bytes) => {
+          resolve({
+            bytesInUse: chrome.runtime.lastError ? null : bytes,
+            conversations,
+          });
+        });
       });
-    } catch {
-      resolve();
-    }
-  });
-}
-
-/** True if this ChatGPT conversation id is one of our helper side chats. */
-export async function isKnownSideConversation(
-  siteId: string,
-  conversationId: string
-): Promise<boolean> {
-  if (!conversationId || conversationId.startsWith("anon-")) return false;
-  if (!isExtensionAlive()) return false;
-  const key = sideIndexKey(siteId);
-  return new Promise((resolve) => {
-    try {
-      chrome.storage.local.get([key], (result) => {
-        const ids = Array.isArray(result[key])
-          ? (result[key] as string[])
-          : [];
-        resolve(ids.includes(conversationId));
-      });
-    } catch {
-      resolve(false);
+    } catch (err) {
+      log.warn("storage summary failed:", asStorageError(err).message);
+      resolve({ bytesInUse: null, conversations: [] });
     }
   });
 }

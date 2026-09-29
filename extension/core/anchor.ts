@@ -1,4 +1,8 @@
+import { rafThrottle } from "./dom";
+import { createLogger } from "./log";
 import type { Thread } from "./types";
+
+const log = createLogger("anchor");
 
 /**
  * Convert a DOM position (node + offset) into a plain-text character offset
@@ -48,45 +52,9 @@ export function getPlainText(root: Node): string {
 }
 
 /**
- * Given raw message text and thread anchors, return HTML with
- * <mark data-thread-id="..."> spliced in at the right offsets.
- *
- * Used by the static harness; live ChatGPT uses wrapHighlightsInPlace instead
- * so host markdown/DOM structure is preserved.
- *
  * Overlaps are rejected (later starts that collide with a kept interval
- * are skipped). TODO: replace with a real interval-based renderer that
- * can split/merge overlapping highlights cleanly.
+ * are skipped). TODO: split/merge overlapping highlights cleanly.
  */
-export function renderWithHighlights(
-  rawText: string,
-  threads: Pick<Thread, "id" | "anchorStart" | "anchorEnd">[]
-): string {
-  const kept = filterNonOverlapping(threads, rawText.length);
-  if (kept.length === 0) {
-    return escapeHtml(rawText);
-  }
-
-  let html = "";
-  let cursor = 0;
-
-  for (const t of kept) {
-    if (cursor < t.anchorStart) {
-      html += escapeHtml(rawText.slice(cursor, t.anchorStart));
-    }
-    html += `<mark data-thread-id="${escapeAttr(t.id)}">${escapeHtml(
-      rawText.slice(t.anchorStart, t.anchorEnd)
-    )}</mark>`;
-    cursor = t.anchorEnd;
-  }
-
-  if (cursor < rawText.length) {
-    html += escapeHtml(rawText.slice(cursor));
-  }
-
-  return html;
-}
-
 function filterNonOverlapping(
   threads: Pick<Thread, "id" | "anchorStart" | "anchorEnd">[],
   textLen: number
@@ -104,8 +72,8 @@ function filterNonOverlapping(
       continue;
     }
     if (t.anchorStart < lastEnd) {
-      console.warn(
-        "[ai-helper] Skipping overlapping highlight",
+      log.warn(
+        "Skipping overlapping highlight",
         t.id,
         `(${t.anchorStart}-${t.anchorEnd} overlaps prior end ${lastEnd})`
       );
@@ -117,18 +85,6 @@ function filterNonOverlapping(
   return kept;
 }
 
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-}
-
-function escapeAttr(s: string): string {
-  return escapeHtml(s).replace(/'/g, "&#39;");
-}
-
 export interface SelectionAnchor {
   messageRoot: HTMLElement;
   start: number;
@@ -137,14 +93,18 @@ export interface SelectionAnchor {
   rect: DOMRect;
 }
 
+/** Site hook: message root containing a node, when it isn't in the known roots. */
+export type RootForNode = (node: Node) => HTMLElement | null;
+
 /**
  * If the current window selection lies entirely inside one of the given
  * message roots, return its character offsets and bounding rect.
- * Also recovers when ChatGPT wraps the selection in a slightly different node
- * than our registered markdown root (walk up to an assistant turn).
+ * Falls back to `findRootForNode` when the host wraps the selection in a node
+ * outside the registered roots.
  */
 export function getSelectionAnchor(
-  messageRoots: HTMLElement[]
+  messageRoots: HTMLElement[],
+  findRootForNode?: RootForNode
 ): SelectionAnchor | null {
   const sel = window.getSelection();
   if (!sel || sel.isCollapsed || sel.rangeCount === 0) {
@@ -163,7 +123,7 @@ export function getSelectionAnchor(
     ) ?? null;
 
   if (!messageRoot) {
-    messageRoot = findAssistantRootFromNode(startContainer);
+    messageRoot = findRootForNode?.(startContainer) ?? null;
     if (
       !messageRoot ||
       !messageRoot.contains(startContainer) ||
@@ -199,33 +159,6 @@ export function getSelectionAnchor(
     quotedText,
     rect,
   };
-}
-
-/** Walk up from a selection node to a plausible assistant message root. */
-function findAssistantRootFromNode(node: Node): HTMLElement | null {
-  const el =
-    node.nodeType === Node.ELEMENT_NODE
-      ? (node as HTMLElement)
-      : node.parentElement;
-  if (!el) return null;
-
-  const turn = el.closest<HTMLElement>(
-    [
-      '[data-message-author-role="assistant"]',
-      '[data-turn="assistant"]',
-      'article[data-turn-role="assistant"]',
-      '[data-testid="assistant-message"]',
-      '[data-testid*="assistant"]',
-    ].join(", ")
-  );
-  if (!turn) return null;
-
-  // Prefer the markdown body when present so offsets match highlight wrapping.
-  return (
-    turn.querySelector<HTMLElement>(
-      ".markdown, .prose, [class*='markdown'], [class*='prose'], .whitespace-pre-wrap"
-    ) ?? turn
-  );
 }
 
 /** Recompute a viewport rect for a previously captured selection anchor. */
@@ -278,25 +211,24 @@ function rangeFromOffsets(
   }
 }
 
-const ASK_BUTTON_ID = "ai-helper-ask-btn";
-const ASK_BUTTON_INJECTED = "ai-helper-ask-injected";
+export const ASK_BUTTON_ID = "ai-helper-ask-btn";
 
 export type AskButtonHandler = (anchor: SelectionAnchor) => void;
 
-function styleAskButton(button: HTMLButtonElement, inline: boolean): void {
+function styleAskButton(button: HTMLButtonElement): void {
   Object.assign(button.style, {
-    position: inline ? "static" : "fixed",
-    zIndex: inline ? "auto" : "2147483646",
-    margin: inline ? "0 0 0 6px" : "0",
+    position: "fixed",
+    zIndex: "2147483646",
+    margin: "0",
     padding: "6px 10px",
     fontSize: "12px",
-    fontFamily: "system-ui, sans-serif",
+    fontFamily: "-apple-system, BlinkMacSystemFont, system-ui, sans-serif",
     lineHeight: "1.2",
     border: "1px solid #ccc",
     borderRadius: "6px",
     background: "#fff",
     color: "#111",
-    boxShadow: inline ? "none" : "0 2px 8px rgba(0,0,0,0.15)",
+    boxShadow: "0 2px 8px rgba(0,0,0,0.15)",
     cursor: "pointer",
     whiteSpace: "nowrap",
     flexShrink: "0",
@@ -306,15 +238,14 @@ function styleAskButton(button: HTMLButtonElement, inline: boolean): void {
 function createAskButton(
   getPending: () => SelectionAnchor | null,
   onAsk: AskButtonHandler,
-  hide: () => void,
-  inline: boolean
+  hide: () => void
 ): HTMLButtonElement {
   const button = document.createElement("button");
-  button.id = inline ? ASK_BUTTON_INJECTED : ASK_BUTTON_ID;
+  button.id = ASK_BUTTON_ID;
   button.type = "button";
   button.textContent = "Ask about this";
   button.dataset.aiHelperAsk = "1";
-  styleAskButton(button, inline);
+  styleAskButton(button);
   button.addEventListener("mousedown", (e) => {
     e.preventDefault();
     e.stopPropagation();
@@ -336,9 +267,9 @@ function createAskButton(
  */
 export function attachSelectionHandler(
   getMessageRoots: () => HTMLElement[],
-  onAsk: AskButtonHandler
+  onAsk: AskButtonHandler,
+  findRootForNode?: RootForNode
 ): () => void {
-  let button: HTMLButtonElement | null = null;
   let pending: SelectionAnchor | null = null;
   let selectionTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -346,7 +277,6 @@ export function attachSelectionHandler(
     document
       .querySelectorAll<HTMLElement>("[data-ai-helper-ask='1']")
       .forEach((el) => el.remove());
-    button = null;
     pending = null;
   };
 
@@ -368,23 +298,22 @@ export function attachSelectionHandler(
       ASK_BUTTON_ID
     ) as HTMLButtonElement | null;
     if (existing) {
-      button = existing;
       positionFloating(existing, anchor.rect);
       return;
     }
-    button = createAskButton(() => pending, onAsk, hide, false);
+    const button = createAskButton(() => pending, onAsk, hide);
     positionFloating(button, anchor.rect);
     document.body.appendChild(button);
+    log.debug("Ask button shown");
   };
 
   const show = (anchor: SelectionAnchor) => {
     pending = anchor;
-    document.getElementById(ASK_BUTTON_INJECTED)?.remove();
     placeFloating(anchor);
   };
 
   const refreshFromSelection = () => {
-    const anchor = getSelectionAnchor(getMessageRoots());
+    const anchor = getSelectionAnchor(getMessageRoots(), findRootForNode);
     if (anchor) {
       show(anchor);
       return;
@@ -425,12 +354,7 @@ export function attachSelectionHandler(
   const onPointerDown = (e: Event) => {
     const t = e.target;
     if (!(t instanceof Node)) return;
-    if (
-      t instanceof Element &&
-      (t.closest("[data-ai-helper-ask='1']") ||
-        t.closest(`#${ASK_BUTTON_ID}`) ||
-        t.closest(`#${ASK_BUTTON_INJECTED}`))
-    ) {
+    if (t instanceof Element && t.closest("[data-ai-helper-ask='1']")) {
       return;
     }
     // Click elsewhere dismisses our button (and pending).
@@ -449,26 +373,25 @@ export function attachSelectionHandler(
   };
 
   /** Keep the Ask button while scrolling; only hide if the anchor is gone. */
-  const onScroll = () => {
+  const onScroll = rafThrottle(() => {
     if (!pending) return;
     if (!pending.messageRoot.isConnected) {
       hide();
       return;
     }
-    const live = getSelectionAnchor(getMessageRoots());
+    const live = getSelectionAnchor(getMessageRoots(), findRootForNode);
     const rect =
       live && live.messageRoot === pending.messageRoot
         ? live.rect
         : getAnchorRect(pending);
     if (!rect || (rect.width === 0 && rect.height === 0)) {
       document.getElementById(ASK_BUTTON_ID)?.remove();
-      if (button?.id === ASK_BUTTON_ID) button = null;
       return;
     }
     if (live) pending = live;
     else pending = { ...pending, rect };
     placeFloating(pending);
-  };
+  });
 
   document.addEventListener("mouseup", onMouseUp, true);
   document.addEventListener("touchend", onTouchEnd, true);
@@ -486,6 +409,7 @@ export function attachSelectionHandler(
     document.removeEventListener("pointerdown", onPointerDown, true);
     document.removeEventListener("selectionchange", onSelectionChange);
     window.removeEventListener("scroll", onScroll, true);
+    onScroll.cancel();
     if (selectionTimer) clearTimeout(selectionTimer);
     hide();
   };

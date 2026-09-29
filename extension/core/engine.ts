@@ -4,17 +4,23 @@ import {
   getPlainText,
   type SelectionAnchor,
 } from "./anchor";
+import { registerDiagnostics } from "./diagnostics";
+import { createLogger } from "./log";
 import { Sidebar, sendAskFollowUp } from "./sidebar";
 import {
   EXTENSION_RELOAD_MSG,
   isExtensionAlive,
   loadThreads,
-  rememberSideConversations,
   saveThreads,
 } from "./storage";
 import type { SiteAdapter, Thread } from "./types";
 
+const log = createLogger("engine");
+
 const EXCERPT_MAX_CHARS = 4000;
+const TICK_MS = 1000;
+/** Give up waiting for a streaming message after this long (e.g. a stuck stop button). */
+const READY_TIMEOUT_MS = 10 * 60_000;
 
 function createId(): string {
   if (typeof crypto !== "undefined" && crypto.randomUUID) {
@@ -32,6 +38,9 @@ export async function bootEngine(adapter: SiteAdapter): Promise<() => void> {
   let conversationId = adapter.getConversationId();
   let threads: Thread[] = await loadThreads(adapter.siteId, conversationId);
   const messageEls = new Map<string, HTMLElement>();
+  /** Messages still streaming; highlights are applied once they complete. */
+  const pendingReady = new Map<HTMLElement, { messageId: string; since: number }>();
+  let loadToken = 0;
   let dead = false;
 
   const markDead = (err?: unknown) => {
@@ -41,7 +50,7 @@ export async function bootEngine(adapter: SiteAdapter): Promise<() => void> {
       err instanceof Error && /reload this/i.test(err.message)
         ? err.message
         : EXTENSION_RELOAD_MSG;
-    console.warn("[ai-helper]", msg, err instanceof Error ? err.message : err);
+    log.warn(msg, err instanceof Error ? err.message : err ?? "");
   };
 
   const persist = async () => {
@@ -74,29 +83,33 @@ export async function bootEngine(adapter: SiteAdapter): Promise<() => void> {
     return "";
   };
 
-  const bindMarkClicks = () => {
-    for (const el of messageEls.values()) {
-      el.querySelectorAll("mark[data-thread-id]").forEach((mark) => {
-        const htmlMark = mark as HTMLElement;
-        if (htmlMark.dataset.aiHelperBound) return;
-        htmlMark.dataset.aiHelperBound = "1";
-        htmlMark.addEventListener("click", (e) => {
-          e.preventDefault();
-          e.stopPropagation();
-          const id = htmlMark.dataset.threadId;
-          if (id) sidebar.focusThread(id);
-        });
+  const bindMarkClicks = (el: HTMLElement) => {
+    el.querySelectorAll<HTMLElement>("mark[data-thread-id]").forEach((mark) => {
+      if (mark.dataset.aiHelperBound) return;
+      mark.dataset.aiHelperBound = "1";
+      mark.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const id = mark.dataset.threadId;
+        if (id) sidebar.focusThread(id);
       });
+    });
+  };
+
+  const applyToMessage = (el: HTMLElement, messageId: string) => {
+    if (!el.dataset.aiHelperRaw) {
+      el.dataset.aiHelperRaw = getPlainText(el);
     }
+    const forMessage = threads.filter((t) => t.messageId === messageId);
+    applyHighlightsToElement(el, forMessage);
+    bindMarkClicks(el);
   };
 
   const refreshHighlights = () => {
     for (const [messageId, el] of messageEls) {
       if (!adapter.isMessageComplete(el)) continue;
-      const forMessage = threads.filter((t) => t.messageId === messageId);
-      applyHighlightsToElement(el, forMessage);
+      applyToMessage(el, messageId);
     }
-    bindMarkClicks();
   };
 
   const sidebar = new Sidebar({
@@ -168,11 +181,6 @@ export async function bootEngine(adapter: SiteAdapter): Promise<() => void> {
               { role: "assistant", text: result.reply, ts: Date.now() },
             ],
           };
-          if (result.sideConversationId) {
-            void rememberSideConversations(adapter.siteId, [
-              result.sideConversationId,
-            ]);
-          }
           try {
             await persist();
           } catch (err) {
@@ -193,26 +201,37 @@ export async function bootEngine(adapter: SiteAdapter): Promise<() => void> {
   const registerMessage = (el: HTMLElement) => {
     const messageId = adapter.getMessageId(el);
     messageEls.set(messageId, el);
+    if (adapter.isMessageComplete(el)) {
+      pendingReady.delete(el);
+      applyToMessage(el, messageId);
+    } else if (!pendingReady.has(el)) {
+      pendingReady.set(el, { messageId, since: Date.now() });
+    }
+  };
 
-    const applyWhenReady = () => {
-      if (!adapter.isMessageComplete(el)) {
-        setTimeout(applyWhenReady, 400);
-        return;
+  const processPendingReady = () => {
+    const now = Date.now();
+    for (const [el, { messageId, since }] of pendingReady) {
+      if (!el.isConnected) {
+        pendingReady.delete(el);
+      } else if (adapter.isMessageComplete(el)) {
+        pendingReady.delete(el);
+        applyToMessage(el, messageId);
+      } else if (now - since > READY_TIMEOUT_MS) {
+        pendingReady.delete(el);
+        log.warn(
+          `Message ${messageId} still looks like it is streaming after ${
+            READY_TIMEOUT_MS / 60_000
+          } min; skipping highlight restore for it.`
+        );
       }
-      if (!el.dataset.aiHelperRaw) {
-        el.dataset.aiHelperRaw = getPlainText(el);
-      }
-      const forMessage = threads.filter((t) => t.messageId === messageId);
-      applyHighlightsToElement(el, forMessage);
-      bindMarkClicks();
-    };
-    applyWhenReady();
+    }
   };
 
   const onAsk = async (anchor: SelectionAnchor) => {
     if (!isExtensionAlive()) {
       markDead();
-      console.warn("[ai-helper]", EXTENSION_RELOAD_MSG);
+      log.warn(EXTENSION_RELOAD_MSG);
       return;
     }
     const messageId = adapter.getMessageId(anchor.messageRoot);
@@ -230,9 +249,7 @@ export async function bootEngine(adapter: SiteAdapter): Promise<() => void> {
         !(anchor.end <= t.anchorStart || anchor.start >= t.anchorEnd)
     );
     if (overlapping) {
-      console.warn(
-        "[ai-helper] Selection overlaps an existing highlight; create skipped."
-      );
+      log.warn("Selection overlaps an existing highlight; create skipped.");
       return;
     }
 
@@ -249,8 +266,8 @@ export async function bootEngine(adapter: SiteAdapter): Promise<() => void> {
       await persist();
     } catch (err) {
       threads = threads.filter((t) => t.id !== thread.id);
-      console.warn(
-        "[ai-helper] could not save new thread:",
+      log.warn(
+        "could not save new thread:",
         err instanceof Error ? err.message : err
       );
       return;
@@ -264,44 +281,62 @@ export async function bootEngine(adapter: SiteAdapter): Promise<() => void> {
     () => adapter.getMessageContainers(),
     (anchor) => {
       void onAsk(anchor);
-    }
+    },
+    adapter.getMessageRootForNode?.bind(adapter)
   );
 
-  adapter.onNewMessage((el) => registerMessage(el));
+  const stopObserving = adapter.onNewMessage((el) => registerMessage(el));
 
-  const convPoll = setInterval(() => {
+  const onConversationChange = async (next: string) => {
+    log.debug(`Conversation changed: "${conversationId}" -> "${next}"`);
+    conversationId = next;
+    const token = ++loadToken;
+    const loaded = await loadThreads(adapter.siteId, next);
+    if (token !== loadToken || dead) return;
+    threads = loaded;
+    messageEls.clear();
+    pendingReady.clear();
+    sidebar.setThreads(threads);
+    for (const el of adapter.getMessageContainers()) {
+      registerMessage(el);
+    }
+  };
+
+  // Single watcher for SPA navigation and host re-renders (no History API hooks
+  // are available from the isolated world, so a cheap tick is the reliable option).
+  const tick = setInterval(() => {
     if (dead || !isExtensionAlive()) {
       markDead();
-      clearInterval(convPoll);
+      clearInterval(tick);
       return;
     }
+    adapter.reconcile?.();
+    sidebar.ensureMounted();
     const next = adapter.getConversationId();
     if (next !== conversationId) {
-      conversationId = next;
-      void (async () => {
-        threads = await loadThreads(adapter.siteId, conversationId);
-        messageEls.clear();
-        sidebar.setThreads(threads);
-        for (const el of adapter.getMessageContainers()) {
-          registerMessage(el);
-        }
-      })();
+      void onConversationChange(next);
     }
-  }, 1000);
+    if (pendingReady.size) processPendingReady();
+  }, TICK_MS);
 
-  const existingSideIds = threads
-    .map((t) => t.sideConversationId)
-    .filter((id): id is string => Boolean(id));
-  if (existingSideIds.length) {
-    void rememberSideConversations(adapter.siteId, existingSideIds);
-  }
+  const unregisterDiagnostics = registerDiagnostics({
+    adapter,
+    getConversationId: () => conversationId,
+    getThreadCount: () => threads.length,
+    getRegisteredMessageCount: () => messageEls.size,
+    getPendingCount: () => pendingReady.size,
+    isSidebarMounted: () => sidebar.isMounted(),
+    isDead: () => dead,
+  });
 
-  console.info(
-    `[ai-helper] Engine started for site="${adapter.siteId}" conversation="${conversationId}" (${threads.length} threads loaded)`
+  log.info(
+    `Engine started for site="${adapter.siteId}" conversation="${conversationId}" (${threads.length} threads loaded)`
   );
 
   return () => {
     detachSelection();
-    clearInterval(convPoll);
+    stopObserving();
+    clearInterval(tick);
+    unregisterDiagnostics();
   };
 }

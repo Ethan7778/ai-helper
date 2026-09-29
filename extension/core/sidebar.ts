@@ -2,8 +2,13 @@ import type { AskFollowUpRequest, AskFollowUpResponse, Thread } from "./types";
 import { formatReplyHtml } from "./text-clean";
 import { fetchAccessTokenFromPage } from "./chatgpt-auth";
 import { completeViaChatGptSession } from "../background/chatgpt-session";
+import { rafThrottle } from "./dom";
+import { createLogger } from "./log";
 
-const HOST_ID = "ai-helper-sidebar-host";
+const log = createLogger("sidebar");
+
+export const HOST_ID = "ai-helper-sidebar-host";
+const FONT_STACK = `-apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif`;
 
 export interface SidebarCallbacks {
   onFocusThread: (threadId: string) => void;
@@ -34,7 +39,7 @@ const STYLES = `
   border-radius: 8px;
   background: #f7f7f5;
   color: #333;
-  font: 600 11px/1 "Segoe UI", system-ui, sans-serif;
+  font: 600 11px/1 ${FONT_STACK};
   cursor: pointer;
   box-shadow: 0 2px 10px rgba(0,0,0,0.12);
   writing-mode: vertical-rl;
@@ -56,7 +61,7 @@ const STYLES = `
   max-width: min(360px, 100vw);
   background: #f7f7f5;
   color: #1a1a1a;
-  font-family: "Segoe UI", system-ui, sans-serif;
+  font-family: ${FONT_STACK};
   font-size: 13px;
   line-height: 1.45;
   border-left: 1px solid #d8d8d4;
@@ -269,6 +274,17 @@ export class Sidebar {
     this.renderShell();
   }
 
+  /** Re-append the host if the page's own rendering removed it from <body>. */
+  ensureMounted(): void {
+    if (this.host.isConnected) return;
+    log.debug("Sidebar host was removed by the page; re-attaching");
+    document.body.appendChild(this.host);
+  }
+
+  isMounted(): boolean {
+    return this.host.isConnected;
+  }
+
   setThreads(threads: Thread[]): void {
     this.threads = threads;
     this.renderList();
@@ -446,12 +462,11 @@ export class Sidebar {
       if (!question) return;
       send.disabled = true;
       status.textContent = "";
+      const patch = rafThrottle((partial: string) =>
+        this.patchAssistantReply(thread.id, partial)
+      );
       try {
-        const result = await this.callbacks.onSend(
-          thread,
-          question,
-          (partial) => this.patchAssistantReply(thread.id, partial)
-        );
+        const result = await this.callbacks.onSend(thread, question, patch);
         if (!result.ok) {
           status.textContent = result.error || "Request failed";
         } else {
@@ -460,6 +475,7 @@ export class Sidebar {
       } catch (err) {
         status.textContent = err instanceof Error ? err.message : String(err);
       } finally {
+        patch.cancel();
         send.disabled = false;
         if (this.threads.some((t) => t.id === thread.id)) {
           this.renderList();
@@ -472,7 +488,8 @@ export class Sidebar {
 
     send.addEventListener("click", () => void doSend());
     input.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") {
+      // Enter while an IME (Japanese, Chinese, macOS dictation) is composing confirms text, not send.
+      if (e.key === "Enter" && !e.isComposing) {
         e.preventDefault();
         void doSend();
       }
@@ -510,14 +527,12 @@ export async function sendAskFollowUp(
 
   if (payload.siteId === "chatgpt") {
     try {
-      console.info(
-        "[ai-helper][chatgpt-session] Completing follow-up in page (direct path)"
-      );
+      log.debug("Completing follow-up in page (direct path)");
       const creds = await fetchAccessTokenFromPage();
       return await completeViaChatGptSession(creds, message, onPartial);
     } catch (err) {
       const error = err instanceof Error ? err.message : String(err);
-      console.error("[ai-helper][chatgpt-session] complete failed:", error);
+      log.error("Follow-up failed:", error);
       return { ok: false, error };
     }
   }

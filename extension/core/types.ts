@@ -26,9 +26,16 @@ export interface SiteAdapter {
   getMessageContainers(): HTMLElement[];
   getMessageId(el: HTMLElement): string;
   isMessageComplete(el: HTMLElement): boolean;
-  onNewMessage(cb: (el: HTMLElement) => void): void;
+  /** Report existing and future message roots. Returns a cleanup function. */
+  onNewMessage(cb: (el: HTMLElement) => void): () => void;
   /** Optional: budgeted excerpt of the visible parent chat for follow-ups. */
   getConversationExcerpt?(maxChars: number): string;
+  /** Optional: message root containing `node`, for selections outside known roots. */
+  getMessageRootForNode?(node: Node): HTMLElement | null;
+  /** Optional: re-attach observers after SPA navigation or host DOM replacement. */
+  reconcile?(): void;
+  /** Optional: selector hit counts etc. for the diagnostics report. */
+  describeDom?(): Record<string, unknown>;
 }
 
 /** Message sent from the sidebar to the background service worker. */
@@ -53,25 +60,3 @@ export interface AskFollowUpResponse {
   sideConversationId?: string;
   sideParentMessageId?: string;
 }
-
-/** Content-script ↔ service-worker session credential request. */
-export interface GetAccessTokenRequest {
-  type: "get-chatgpt-access-token";
-}
-
-export interface GetAccessTokenResponse {
-  ok: boolean;
-  accessToken?: string;
-  userAgent?: string;
-  error?: string;
-}
-
-/** SW asks the content script to run the ChatGPT session completion (cookies). */
-export interface ChatGptCompleteRequest {
-  type: "chatgpt-complete";
-  payload: Omit<AskFollowUpRequest, "type">;
-}
-
-export type ContentScriptRequest =
-  | GetAccessTokenRequest
-  | ChatGptCompleteRequest;
