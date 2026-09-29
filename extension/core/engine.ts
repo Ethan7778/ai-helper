@@ -11,6 +11,8 @@ import {
   EXTENSION_RELOAD_MSG,
   isExtensionAlive,
   loadThreads,
+  migrateThreads,
+  removeLegacyKeys,
   saveThreads,
 } from "./storage";
 import type { SiteAdapter, Thread } from "./types";
@@ -286,12 +288,32 @@ export async function bootEngine(adapter: SiteAdapter): Promise<() => void> {
   );
 
   const stopObserving = adapter.onNewMessage((el) => registerMessage(el));
+  void removeLegacyKeys(adapter.siteId);
 
   const onConversationChange = async (next: string) => {
     log.debug(`Conversation changed: "${conversationId}" -> "${next}"`);
+    const previous = conversationId;
     conversationId = next;
     const token = ++loadToken;
-    const loaded = await loadThreads(adapter.siteId, next);
+    // A brand-new chat starts on "/" and gets its /c/<id> URL mid-reply; carry
+    // over highlights made before that, but only for messages still on screen.
+    const loaded =
+      previous.startsWith("anon-") && !next.startsWith("anon-")
+        ? await migrateThreads(
+            adapter.siteId,
+            previous,
+            next,
+            new Set(
+              adapter.getMessageContainers().map((el) => adapter.getMessageId(el))
+            )
+          ).catch((err) => {
+            log.warn(
+              "Could not move new-chat highlights:",
+              err instanceof Error ? err.message : err
+            );
+            return loadThreads(adapter.siteId, next);
+          })
+        : await loadThreads(adapter.siteId, next);
     if (token !== loadToken || dead) return;
     threads = loaded;
     messageEls.clear();

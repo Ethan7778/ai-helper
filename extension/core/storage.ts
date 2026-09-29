@@ -82,6 +82,62 @@ export async function saveThreads(
   });
 }
 
+function removeKeys(keys: string[]): Promise<void> {
+  if (!isExtensionAlive() || keys.length === 0) return Promise.resolve();
+  return new Promise((resolve) => {
+    try {
+      chrome.storage.local.remove(keys, () => {
+        if (chrome.runtime.lastError) {
+          log.warn("storage remove failed:", chrome.runtime.lastError.message);
+        }
+        resolve();
+      });
+    } catch (err) {
+      log.warn("storage remove threw:", asStorageError(err).message);
+      resolve();
+    }
+  });
+}
+
+/** Drop keys written by older versions that nothing reads anymore. */
+export function removeLegacyKeys(siteId: string): Promise<void> {
+  return removeKeys([`${siteId}:__side_conversation_ids`]);
+}
+
+/**
+ * Move threads from a pre-id conversation key (e.g. "anon-/") to the real
+ * conversation id once the host assigns one. Only threads whose message is
+ * in `presentMessageIds` move; the rest stay under the old key.
+ */
+export async function migrateThreads(
+  siteId: string,
+  fromConversationId: string,
+  toConversationId: string,
+  presentMessageIds: Set<string>
+): Promise<Thread[]> {
+  const [from, to] = await Promise.all([
+    loadThreads(siteId, fromConversationId),
+    loadThreads(siteId, toConversationId),
+  ]);
+  const moving = from.filter((t) => presentMessageIds.has(t.messageId));
+  if (moving.length === 0) return to;
+
+  const known = new Set(to.map((t) => t.id));
+  const merged = [...to, ...moving.filter((t) => !known.has(t.id))];
+  const remaining = from.filter((t) => !presentMessageIds.has(t.messageId));
+
+  await saveThreads(siteId, toConversationId, merged);
+  if (remaining.length) {
+    await saveThreads(siteId, fromConversationId, remaining);
+  } else {
+    await removeKeys([storageKey(siteId, fromConversationId)]);
+  }
+  log.debug(
+    `Moved ${moving.length} thread(s) from "${fromConversationId}" to "${toConversationId}"`
+  );
+  return merged;
+}
+
 export interface StorageSummary {
   bytesInUse: number | null;
   conversations: {
