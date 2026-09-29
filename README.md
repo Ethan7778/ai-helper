@@ -6,7 +6,7 @@ Chrome extension (Manifest V3) that lets you highlight text in an AI reply, open
 
 Download the prebuilt zip from the repo:
 
-- [`releases/ai-helper-v0.1.1.zip`](./releases/ai-helper-v0.1.1.zip)
+- [`releases/ai-helper-v0.1.2.zip`](./releases/ai-helper-v0.1.2.zip)
 
 Then:
 
@@ -29,9 +29,9 @@ When a new zip is published, replace the folder contents, click **Reload** on th
 | The release zip | The unzipped folder (the one with `manifest.json` inside) |
 | A clone of the repo | `extension/dist` — after running the build |
 
-Do **not** load `extension/` itself. It has a `manifest.json` but no compiled `content.js`, so Chrome loads it without error and the extension silently does nothing. On macOS, also make sure you picked the inner folder if Archive Utility created `ai-helper-v0.1.1/ai-helper-v0.1.1/`.
+Do **not** load `extension/` itself. It has a `manifest.json` but no compiled `content.js`, so Chrome loads it without error and the extension silently does nothing. On macOS, also make sure you picked the inner folder if Archive Utility created `ai-helper-v0.1.2/ai-helper-v0.1.2/`.
 
-The version on the `chrome://extensions` card should match the zip name (e.g. `0.1.1`).
+The version on the `chrome://extensions` card should match the zip name (e.g. `0.1.2`).
 
 ### Build from source
 

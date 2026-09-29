@@ -8,6 +8,7 @@ import { createLogger } from "./log";
 const log = createLogger("sidebar");
 
 export const HOST_ID = "ai-helper-sidebar-host";
+const COMPOSER_MAX_HEIGHT = 160;
 const FONT_STACK = `-apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif`;
 
 export interface SidebarCallbacks {
@@ -35,13 +36,13 @@ const STYLES = `
   width: 28px;
   height: 72px;
   padding: 0;
-  border: 1px solid #d8d8d4;
-  border-radius: 8px;
-  background: #f7f7f5;
-  color: #333;
+  border: 1px solid rgba(255,255,255,0.18);
+  border-radius: 999px;
+  background: #0d0d0d;
+  color: #fff;
   font: 600 11px/1 ${FONT_STACK};
   cursor: pointer;
-  box-shadow: 0 2px 10px rgba(0,0,0,0.12);
+  box-shadow: 0 4px 14px rgba(0,0,0,0.25);
   writing-mode: vertical-rl;
   text-orientation: mixed;
   letter-spacing: 0.04em;
@@ -214,18 +215,29 @@ const STYLES = `
 .reply .body em {
   font-style: italic;
 }
+.fab:hover {
+  background: #2f2f2f;
+}
 .composer {
   display: flex;
+  align-items: flex-end;
   gap: 6px;
 }
-.composer input {
+.composer textarea {
   flex: 1;
+  min-width: 0;
   border: 1px solid #d0d0cc;
   border-radius: 6px;
   padding: 8px 10px;
   font: inherit;
+  line-height: 1.4;
   background: #fff;
   color: #111;
+  resize: none;
+  overflow-y: hidden;
+  max-height: ${COMPOSER_MAX_HEIGHT}px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 .composer button {
   border: none;
@@ -255,6 +267,8 @@ export class Sidebar {
   private listEl!: HTMLElement;
   private threads: Thread[] = [];
   private expanded = new Set<string>();
+  /** Unsent composer text per thread, so re-renders don't wipe it. */
+  private drafts = new Map<string, string>();
   private activeId: string | null = null;
   /** Start collapsed so we don't cover ChatGPT chrome until needed. */
   private collapsed = true;
@@ -291,6 +305,7 @@ export class Sidebar {
   }
 
   focusThread(threadId: string): void {
+    this.expanded.clear();
     this.expanded.add(threadId);
     this.activeId = threadId;
     this.setCollapsed(false);
@@ -299,6 +314,18 @@ export class Sidebar {
       `[data-thread-id="${CSS.escape(threadId)}"]`
     ) as HTMLElement | null;
     card?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }
+
+  /** Accordion: opening a thread closes the others; clicking the open one closes it. */
+  private toggleThread(threadId: string): void {
+    const wasOpen = this.expanded.has(threadId);
+    this.expanded.clear();
+    if (!wasOpen) {
+      this.expanded.add(threadId);
+      this.activeId = threadId;
+      this.callbacks.onFocusThread(threadId);
+    }
+    this.renderList();
   }
 
   /** Update the in-flight assistant bubble without rebuilding the whole list. */
@@ -393,16 +420,7 @@ export class Sidebar {
       thread.replies.length === 1 ? "reply" : "replies"
     }</div>
     `;
-    main.addEventListener("click", () => {
-      if (this.expanded.has(thread.id)) {
-        this.expanded.delete(thread.id);
-      } else {
-        this.expanded.add(thread.id);
-      }
-      this.activeId = thread.id;
-      this.callbacks.onFocusThread(thread.id);
-      this.renderList();
-    });
+    main.addEventListener("click", () => this.toggleThread(thread.id));
 
     const collapseBtn = document.createElement("button");
     collapseBtn.type = "button";
@@ -417,14 +435,7 @@ export class Sidebar {
     collapseBtn.addEventListener("click", (e) => {
       e.preventDefault();
       e.stopPropagation();
-      if (this.expanded.has(thread.id)) {
-        this.expanded.delete(thread.id);
-      } else {
-        this.expanded.add(thread.id);
-        this.activeId = thread.id;
-        this.callbacks.onFocusThread(thread.id);
-      }
-      this.renderList();
+      this.toggleThread(thread.id);
     });
 
     header.appendChild(main);
@@ -448,9 +459,23 @@ export class Sidebar {
 
     const composer = document.createElement("div");
     composer.className = "composer";
-    const input = document.createElement("input");
-    input.type = "text";
+    const input = document.createElement("textarea");
+    input.rows = 1;
     input.placeholder = "Ask about this snippet…";
+    input.value = this.drafts.get(thread.id) ?? "";
+    const autoGrow = () => {
+      input.style.overflowY = "hidden";
+      input.style.height = "auto";
+      const borders = input.offsetHeight - input.clientHeight;
+      const wanted = input.scrollHeight + borders;
+      input.style.height = `${Math.min(wanted, COMPOSER_MAX_HEIGHT)}px`;
+      if (wanted > COMPOSER_MAX_HEIGHT) input.style.overflowY = "auto";
+    };
+    input.addEventListener("input", () => {
+      this.drafts.set(thread.id, input.value);
+      autoGrow();
+    });
+    if (input.value) requestAnimationFrame(autoGrow);
     const send = document.createElement("button");
     send.type = "button";
     send.textContent = "Send";
@@ -471,6 +496,7 @@ export class Sidebar {
           status.textContent = result.error || "Request failed";
         } else {
           input.value = "";
+          this.drafts.delete(thread.id);
         }
       } catch (err) {
         status.textContent = err instanceof Error ? err.message : String(err);
@@ -488,8 +514,8 @@ export class Sidebar {
 
     send.addEventListener("click", () => void doSend());
     input.addEventListener("keydown", (e) => {
-      // Enter while an IME (Japanese, Chinese, macOS dictation) is composing confirms text, not send.
-      if (e.key === "Enter" && !e.isComposing) {
+      // Shift+Enter inserts a newline; Enter during IME composition confirms text.
+      if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
         e.preventDefault();
         void doSend();
       }

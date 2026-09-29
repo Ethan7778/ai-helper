@@ -220,20 +220,38 @@ function styleAskButton(button: HTMLButtonElement): void {
     position: "fixed",
     zIndex: "2147483646",
     margin: "0",
-    padding: "6px 10px",
-    fontSize: "12px",
-    fontFamily: "-apple-system, BlinkMacSystemFont, system-ui, sans-serif",
+    padding: "7px 14px",
+    fontSize: "13px",
+    fontWeight: "500",
+    fontFamily:
+      'ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, Helvetica, Arial, sans-serif',
     lineHeight: "1.2",
-    border: "1px solid #ccc",
-    borderRadius: "6px",
-    background: "#fff",
-    color: "#111",
-    boxShadow: "0 2px 8px rgba(0,0,0,0.15)",
+    letterSpacing: "0.01em",
+    // Light hairline keeps the black pill visible in ChatGPT's dark theme too.
+    border: "1px solid rgba(255,255,255,0.16)",
+    borderRadius: "9999px",
+    background: ASK_BG,
+    color: "#fff",
+    boxShadow: "0 4px 16px rgba(0,0,0,0.22), 0 1px 3px rgba(0,0,0,0.18)",
     cursor: "pointer",
     whiteSpace: "nowrap",
     flexShrink: "0",
+    transition: "background-color 120ms ease, transform 120ms ease",
   } as CSSStyleDeclaration);
+  button.addEventListener("mouseenter", () => {
+    button.style.background = ASK_BG_HOVER;
+  });
+  button.addEventListener("mouseleave", () => {
+    button.style.background = ASK_BG;
+    button.style.transform = "";
+  });
+  button.addEventListener("mousedown", () => {
+    button.style.transform = "scale(0.97)";
+  });
 }
+
+const ASK_BG = "#0d0d0d";
+const ASK_BG_HOVER = "#2f2f2f";
 
 function createAskButton(
   getPending: () => SelectionAnchor | null,
