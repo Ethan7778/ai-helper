@@ -13,10 +13,12 @@ export interface Thread {
   anchorEnd: number;
   quotedText: string;
   replies: Reply[];
-  /** Hidden ChatGPT conversation used only by this highlight thread. */
+  /** Hidden (temporary) side conversation used only by this highlight thread. */
   sideConversationId?: string;
   /** Leaf message id in the side conversation (for parent_message_id). */
   sideParentMessageId?: string;
+  /** Extra per-site continuation state (e.g. Claude org id, Gemini candidate id). */
+  sideMeta?: Record<string, string>;
 }
 
 /** Site-specific hooks so the core engine stays agnostic of host DOM. */
@@ -50,13 +52,17 @@ export interface AskFollowUpRequest {
   threadId: string;
   sideConversationId?: string;
   sideParentMessageId?: string;
+  sideMeta?: Record<string, string>;
+  /** Earlier Q&A in this thread, resent only when the side chat can't be continued. */
+  priorTurns?: Pick<Reply, "role" | "text">[];
 }
 
-/** Response returned by the background service worker. */
+/** Result of a follow-up, from an in-page session client or the service worker. */
 export interface AskFollowUpResponse {
   ok: boolean;
   reply?: string;
   error?: string;
   sideConversationId?: string;
   sideParentMessageId?: string;
+  sideMeta?: Record<string, string>;
 }

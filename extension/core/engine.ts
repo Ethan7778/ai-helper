@@ -165,6 +165,8 @@ export async function bootEngine(adapter: SiteAdapter): Promise<() => void> {
           threadId: current.id,
           sideConversationId: current.sideConversationId,
           sideParentMessageId: current.sideParentMessageId,
+          sideMeta: current.sideMeta,
+          priorTurns: current.replies.map(({ role, text }) => ({ role, text })),
         },
         onPartial
       );
@@ -178,6 +180,7 @@ export async function bootEngine(adapter: SiteAdapter): Promise<() => void> {
               result.sideConversationId ?? threads[i].sideConversationId,
             sideParentMessageId:
               result.sideParentMessageId ?? threads[i].sideParentMessageId,
+            sideMeta: result.sideMeta ?? threads[i].sideMeta,
             replies: [
               ...threads[i].replies,
               { role: "assistant", text: result.reply, ts: Date.now() },

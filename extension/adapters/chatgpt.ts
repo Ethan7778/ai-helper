@@ -1,309 +1,50 @@
-import { queryFirst, waitForElement } from "../core/dom";
-import { createLogger } from "../core/log";
 import type { SiteAdapter } from "../core/types";
+import { createDomAdapter } from "./dom-adapter";
 
-const log = createLogger("chatgpt-adapter");
-
-/** Attribute-based assistant turn markers, most stable first. */
-const ASSISTANT_SELECTORS = [
-  '[data-message-author-role="assistant"]',
-  '[data-turn="assistant"]',
-  'article[data-turn-role="assistant"]',
-  '[data-testid="assistant-message"]',
-];
-/** Used only when none of the attribute markers match (UI variants / A/B tests). */
-const ASSISTANT_FALLBACK_SELECTORS = [".agent-turn"];
-const ALL_ASSISTANT_SELECTOR = [
-  ...ASSISTANT_SELECTORS,
-  ...ASSISTANT_FALLBACK_SELECTORS,
-].join(", ");
-
-const USER_SELECTORS = [
-  '[data-message-author-role="user"]',
-  '[data-turn="user"]',
-  'article[data-turn-role="user"]',
-];
-/** Rendered markdown body inside a turn; highlight offsets are relative to it. */
-const MESSAGE_CONTENT_SELECTOR =
-  ".markdown, .prose, [class*='markdown'], [class*='prose'], .whitespace-pre-wrap";
-/** data-testid is language-independent; aria-labels are English-only fallbacks. */
-const STOP_BUTTON_SELECTORS = [
-  '[data-testid="stop-button"]',
-  'button[aria-label="Stop generating"]',
-  'button[aria-label="Stop streaming"]',
-];
-const CHAT_ROOT_SELECTORS = ["main", '[role="main"]'];
 const ROLE_SELECTOR =
   "[data-message-author-role], [data-turn], [data-turn-role]";
-const CHAT_ROOT_TIMEOUT_MS = 10_000;
-const MUTATION_QUIET_MS = 500;
-
-function simpleHash(input: string): string {
-  let h = 2166136261;
-  for (let i = 0; i < input.length; i++) {
-    h ^= input.charCodeAt(i);
-    h = Math.imul(h, 16777619);
-  }
-  return (h >>> 0).toString(16);
-}
-
-/** Matches in document order, dropping any element that contains another match. */
-function queryInnermost(selectors: readonly string[]): HTMLElement[] {
-  if (selectors.length === 0) return [];
-  const all = Array.from(
-    document.querySelectorAll<HTMLElement>(selectors.join(", "))
-  );
-  return all.filter(
-    (el) => !all.some((other) => other !== el && el.contains(other))
-  );
-}
-
-function contentRootOf(turn: HTMLElement): HTMLElement {
-  return turn.querySelector<HTMLElement>(MESSAGE_CONTENT_SELECTOR) ?? turn;
-}
-
-function describeElement(el: Element | null): string {
-  if (!el) return "none";
-  return `<${el.tagName.toLowerCase()}${el.id ? `#${el.id}` : ""}>`;
-}
-
-function extractConversationIdFromUrl(): string {
-  const match = location.pathname.match(/\/(c|share)\/([a-zA-Z0-9-]+)/);
-  if (match) return match[2];
-  return `anon-${location.pathname || "root"}`;
-}
 
 export function createChatGptAdapter(): SiteAdapter {
-  let warnedEmpty = false;
-  let warnedEmptyExcerpt = false;
-  let lastMatchSummary = "";
-  let observedRoot: HTMLElement | null = null;
-  let reconcileImpl: () => void = () => {};
-
-  const findAssistantTurns = (): HTMLElement[] => {
-    const stable = queryInnermost(ASSISTANT_SELECTORS);
-    const turns =
-      stable.length > 0 ? stable : queryInnermost(ASSISTANT_FALLBACK_SELECTORS);
-
-    const summary =
-      stable.length > 0
-        ? `attribute selectors matched ${stable.length}`
-        : `fallback selectors matched ${turns.length}`;
-    if (summary !== lastMatchSummary) {
-      lastMatchSummary = summary;
-      log.debug(`Assistant turns: ${summary}`);
-    }
-    return turns;
-  };
-
-  const adapter: SiteAdapter = {
+  return createDomAdapter({
     siteId: "chatgpt",
-
-    getConversationId(): string {
-      return extractConversationIdFromUrl();
-    },
-
-    getConversationExcerpt(maxChars: number): string {
-      const turns = Array.from(
-        document.querySelectorAll<HTMLElement>(ROLE_SELECTOR)
-      );
-      if (turns.length === 0) {
-        // Empty new chat — expected, stay quiet.
-        return "";
-      }
-      warnedEmptyExcerpt = false;
-
-      const chunks: string[] = [];
-      for (const turn of turns) {
-        const role =
-          turn.getAttribute("data-message-author-role") ||
-          turn.getAttribute("data-turn") ||
-          turn.getAttribute("data-turn-role") ||
-          "unknown";
-        if (role !== "user" && role !== "assistant") continue;
-        const text = (contentRootOf(turn).innerText || "")
-          .replace(/\s+/g, " ")
-          .trim();
-        if (!text) continue;
-        chunks.push(`${role.toUpperCase()}: ${text}`);
-      }
-
-      if (chunks.length === 0) {
-        if (!warnedEmptyExcerpt) {
-          log.warn("Conversation excerpt: turns present but no usable text.");
-          warnedEmptyExcerpt = true;
+    assistantSelectors: [
+      '[data-message-author-role="assistant"]',
+      '[data-turn="assistant"]',
+      'article[data-turn-role="assistant"]',
+      '[data-testid="assistant-message"]',
+    ],
+    assistantFallbackSelectors: [".agent-turn"],
+    userSelectors: [
+      '[data-message-author-role="user"]',
+      '[data-turn="user"]',
+      'article[data-turn-role="user"]',
+    ],
+    contentSelector:
+      ".markdown, .prose, [class*='markdown'], [class*='prose'], .whitespace-pre-wrap",
+    streamingSelectors: ['[data-is-streaming="true"]', ".result-streaming"],
+    // data-testid is language-independent; aria-labels are English-only fallbacks.
+    stopButtonSelectors: [
+      '[data-testid="stop-button"]',
+      'button[aria-label="Stop generating"]',
+      'button[aria-label="Stop streaming"]',
+    ],
+    chatRootSelectors: ["main", '[role="main"]'],
+    conversationIdFromPath: (pathname) =>
+      pathname.match(/\/(c|share)\/([a-zA-Z0-9-]+)/)?.[2] ?? null,
+    messageIdFor: (turn) =>
+      turn.getAttribute("data-message-id") ||
+      turn.getAttribute("data-testid") ||
+      turn.id ||
+      null,
+    excerptTurns: () =>
+      Array.from(document.querySelectorAll<HTMLElement>(ROLE_SELECTOR)).flatMap(
+        (el) => {
+          const role =
+            el.getAttribute("data-message-author-role") ||
+            el.getAttribute("data-turn") ||
+            el.getAttribute("data-turn-role");
+          return role === "user" || role === "assistant" ? [{ role, el }] : [];
         }
-        return "";
-      }
-
-      let excerpt = "";
-      for (let i = chunks.length - 1; i >= 0; i--) {
-        const next = excerpt ? `${chunks[i]}\n\n${excerpt}` : chunks[i];
-        if (next.length > maxChars) {
-          if (!excerpt) {
-            excerpt = chunks[i].slice(-maxChars);
-          }
-          break;
-        }
-        excerpt = next;
-      }
-      return excerpt;
-    },
-
-    getMessageContainers(): HTMLElement[] {
-      const turns = findAssistantTurns();
-
-      // Only warn when the page clearly has chat content but assistants are missing.
-      if (turns.length === 0) {
-        if (!warnedEmpty && queryFirst(USER_SELECTORS)) {
-          log.warn(
-            `Found user turns but no assistant messages (tried: ${ALL_ASSISTANT_SELECTOR}). The site DOM may have changed.`
-          );
-          warnedEmpty = true;
-        }
-        return [];
-      }
-      warnedEmpty = false;
-
-      return Array.from(new Set(turns.map(contentRootOf)));
-    },
-
-    getMessageRootForNode(node: Node): HTMLElement | null {
-      const el =
-        node.nodeType === Node.ELEMENT_NODE
-          ? (node as Element)
-          : node.parentElement;
-      const turn = el?.closest<HTMLElement>(ALL_ASSISTANT_SELECTOR);
-      return turn ? contentRootOf(turn) : null;
-    },
-
-    getMessageId(el: HTMLElement): string {
-      const turn = el.closest<HTMLElement>(ALL_ASSISTANT_SELECTOR) ?? el;
-      const fromAttr =
-        turn.getAttribute("data-message-id") ||
-        turn.getAttribute("data-testid") ||
-        turn.id;
-      if (fromAttr) return fromAttr;
-
-      const containers = adapter.getMessageContainers();
-      const index = containers.indexOf(el);
-      const prefix = (el.innerText || "").slice(0, 80).replace(/\s+/g, " ");
-      return `hash-${simpleHash(`${index}:${prefix}`)}`;
-    },
-
-    isMessageComplete(el: HTMLElement): boolean {
-      if (
-        el.closest('[data-is-streaming="true"]') ||
-        el.querySelector('[data-is-streaming="true"]') ||
-        el.classList.contains("result-streaming") ||
-        el.querySelector(".result-streaming")
-      ) {
-        return false;
-      }
-      // Only the newest assistant message can still be generating, so a stop
-      // button elsewhere on the page must not hold back older messages.
-      const containers = adapter.getMessageContainers();
-      if (containers[containers.length - 1] !== el) return true;
-      return !queryFirst(STOP_BUTTON_SELECTORS);
-    },
-
-    onNewMessage(cb: (el: HTMLElement) => void): () => void {
-      const seen = new WeakSet<HTMLElement>();
-      let observer: MutationObserver | null = null;
-      let quietTimer: ReturnType<typeof setTimeout> | null = null;
-      let lastHref = location.href;
-      let disposed = false;
-
-      const reportExisting = () => {
-        for (const el of adapter.getMessageContainers()) {
-          if (seen.has(el)) continue;
-          seen.add(el);
-          cb(el);
-        }
-      };
-
-      const attach = (root: HTMLElement) => {
-        observer?.disconnect();
-        observedRoot = root;
-        observer = new MutationObserver(() => {
-          if (quietTimer) clearTimeout(quietTimer);
-          quietTimer = setTimeout(reportExisting, MUTATION_QUIET_MS);
-        });
-        observer.observe(root, { childList: true, subtree: true });
-        log.debug(`Observing chat root ${describeElement(root)}`);
-      };
-
-      reportExisting();
-
-      void waitForElement(CHAT_ROOT_SELECTORS, CHAT_ROOT_TIMEOUT_MS).then(
-        (root) => {
-          if (disposed) return;
-          if (!root) {
-            log.warn(
-              `Chat container (${CHAT_ROOT_SELECTORS.join(", ")}) not found after ${
-                CHAT_ROOT_TIMEOUT_MS / 1000
-              }s; observing <body> instead.`
-            );
-          }
-          attach(root ?? document.body);
-          reportExisting();
-        }
-      );
-
-      reconcileImpl = () => {
-        if (disposed) return;
-        let changed = false;
-        if (observedRoot && !observedRoot.isConnected) {
-          log.debug("Chat root was replaced by the page; re-attaching observer");
-          attach(queryFirst(CHAT_ROOT_SELECTORS) ?? document.body);
-          changed = true;
-        }
-        if (location.href !== lastHref) {
-          lastHref = location.href;
-          warnedEmpty = false;
-          changed = true;
-        }
-        if (changed) reportExisting();
-      };
-
-      return () => {
-        disposed = true;
-        observer?.disconnect();
-        observer = null;
-        observedRoot = null;
-        if (quietTimer) clearTimeout(quietTimer);
-        reconcileImpl = () => {};
-      };
-    },
-
-    reconcile(): void {
-      reconcileImpl();
-    },
-
-    describeDom(): Record<string, unknown> {
-      const selectorHits: Record<string, number> = {};
-      for (const sel of [
-        ...ASSISTANT_SELECTORS,
-        ...ASSISTANT_FALLBACK_SELECTORS,
-        ...USER_SELECTORS,
-        ...STOP_BUTTON_SELECTORS,
-      ]) {
-        selectorHits[sel] = document.querySelectorAll(sel).length;
-      }
-      const turns = findAssistantTurns();
-      return {
-        chatRoot: describeElement(queryFirst(CHAT_ROOT_SELECTORS)),
-        observedRoot: observedRoot
-          ? `${describeElement(observedRoot)} connected=${observedRoot.isConnected}`
-          : "none",
-        assistantTurns: turns.length,
-        turnsWithMarkdownBody: turns.filter(
-          (t) => t.querySelector(MESSAGE_CONTENT_SELECTOR) !== null
-        ).length,
-        selectorHits,
-      };
-    },
-  };
-
-  return adapter;
+      ),
+  });
 }

@@ -4,7 +4,7 @@ import type { Thread } from "./types";
 const log = createLogger("storage");
 
 export const EXTENSION_RELOAD_MSG =
-  "Extension was reloaded — refresh this ChatGPT tab to keep using Highlight threads.";
+  "Extension was reloaded — refresh this tab to keep using Highlight threads.";
 
 function storageKey(siteId: string, conversationId: string): string {
   return `${siteId}:${conversationId}`;

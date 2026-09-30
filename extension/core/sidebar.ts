@@ -2,6 +2,9 @@ import type { AskFollowUpRequest, AskFollowUpResponse, Thread } from "./types";
 import { formatReplyHtml } from "./text-clean";
 import { fetchAccessTokenFromPage } from "./chatgpt-auth";
 import { completeViaChatGptSession } from "../background/chatgpt-session";
+import { completeViaClaudeSession } from "../background/claude-session";
+import { completeViaGeminiSession } from "../background/gemini-session";
+import { setHtml } from "./html";
 import { rafThrottle } from "./dom";
 import { createLogger } from "./log";
 
@@ -343,11 +346,11 @@ export class Sidebar {
     if (!live) {
       live = document.createElement("div");
       live.className = "reply assistant streaming";
-      live.innerHTML = `<div class="role">assistant</div><div class="body"></div>`;
+      setHtml(live, `<div class="role">assistant</div><div class="body"></div>`);
       replies.appendChild(live);
     }
     const body = live.querySelector(".body");
-    if (body) body.innerHTML = formatReplyHtml(text) || "&nbsp;";
+    if (body) setHtml(body, formatReplyHtml(text) || "&nbsp;");
     replies.scrollTop = replies.scrollHeight;
   }
 
@@ -359,7 +362,7 @@ export class Sidebar {
   }
 
   private renderShell(): void {
-    this.shadow.innerHTML = "";
+    this.shadow.replaceChildren();
     const style = document.createElement("style");
     style.textContent = STYLES;
     this.shadow.appendChild(style);
@@ -375,13 +378,16 @@ export class Sidebar {
 
     this.panel = document.createElement("div");
     this.panel.className = "panel collapsed";
-    this.panel.innerHTML = `
+    setHtml(
+      this.panel,
+      `
       <div class="header">
         <span>Highlight threads</span>
         <button type="button" class="collapse-btn" title="Collapse" aria-label="Collapse">›</button>
       </div>
       <div class="list"></div>
-    `;
+    `
+    );
     this.shadow.appendChild(this.panel);
     this.listEl = this.panel.querySelector(".list") as HTMLElement;
 
@@ -392,11 +398,14 @@ export class Sidebar {
 
   private renderList(): void {
     if (this.threads.length === 0) {
-      this.listEl.innerHTML = `<div class="empty">Highlight text in a reply and click “Ask about this” to start a thread.</div>`;
+      setHtml(
+        this.listEl,
+        `<div class="empty">Highlight text in a reply and click “Ask about this” to start a thread.</div>`
+      );
       return;
     }
 
-    this.listEl.innerHTML = "";
+    this.listEl.replaceChildren();
     for (const thread of this.threads) {
       this.listEl.appendChild(this.buildCard(thread));
     }
@@ -414,12 +423,15 @@ export class Sidebar {
 
     const main = document.createElement("div");
     main.className = "card-header-main";
-    main.innerHTML = `
+    setHtml(
+      main,
+      `
       <div class="quote">${escapeHtml(thread.quotedText)}</div>
       <div class="meta">${thread.replies.length} ${
-      thread.replies.length === 1 ? "reply" : "replies"
-    }</div>
-    `;
+        thread.replies.length === 1 ? "reply" : "replies"
+      }</div>
+    `
+    );
     main.addEventListener("click", () => this.toggleThread(thread.id));
 
     const collapseBtn = document.createElement("button");
@@ -450,9 +462,12 @@ export class Sidebar {
     for (const r of thread.replies) {
       const div = document.createElement("div");
       div.className = `reply ${r.role}`;
-      div.innerHTML = `<div class="role">${r.role}</div><div class="body">${
-        r.role === "assistant" ? formatReplyHtml(r.text) : escapeHtml(r.text)
-      }</div>`;
+      setHtml(
+        div,
+        `<div class="role">${r.role}</div><div class="body">${
+          r.role === "assistant" ? formatReplyHtml(r.text) : escapeHtml(r.text)
+        }</div>`
+      );
       replies.appendChild(div);
     }
     body.appendChild(replies);
@@ -538,12 +553,25 @@ function escapeHtml(s: string): string {
     .replace(/"/g, "&quot;");
 }
 
+type SessionCompleter = (
+  req: AskFollowUpRequest,
+  onPartial?: (text: string) => void
+) => Promise<AskFollowUpResponse>;
+
+/** Sites whose follow-ups run in-page through the user's logged-in session. */
+const SESSION_COMPLETERS: Record<string, SessionCompleter> = {
+  chatgpt: async (req, onPartial) =>
+    completeViaChatGptSession(await fetchAccessTokenFromPage(), req, onPartial),
+  claude: completeViaClaudeSession,
+  gemini: completeViaGeminiSession,
+};
+
 /**
  * Ask a follow-up about a highlight.
  *
- * ChatGPT runs entirely in the content script (no CS↔SW↔CS nested messaging).
- * That nested pattern closes the message channel before long handoff/WS work
- * finishes. Other sites can still route through the service worker later.
+ * Session-backed sites run entirely in the content script (no CS↔SW↔CS nested
+ * messaging): that pattern closes the message channel before long streams
+ * finish, and page cookies are only same-origin from here.
  */
 export async function sendAskFollowUp(
   payload: Omit<AskFollowUpRequest, "type">,
@@ -551,11 +579,11 @@ export async function sendAskFollowUp(
 ): Promise<AskFollowUpResponse> {
   const message: AskFollowUpRequest = { type: "ask-follow-up", ...payload };
 
-  if (payload.siteId === "chatgpt") {
+  const complete = SESSION_COMPLETERS[payload.siteId];
+  if (complete) {
     try {
-      log.debug("Completing follow-up in page (direct path)");
-      const creds = await fetchAccessTokenFromPage();
-      return await completeViaChatGptSession(creds, message, onPartial);
+      log.debug(`Completing ${payload.siteId} follow-up in page`);
+      return await complete(message, onPartial);
     } catch (err) {
       const error = err instanceof Error ? err.message : String(err);
       log.error("Follow-up failed:", error);

@@ -6,13 +6,16 @@ import { createLogger } from "../core/log";
 
 const log = createLogger("service-worker");
 
+/** Sites whose follow-ups run in the content script via the logged-in session. */
+const IN_PAGE_SITES = new Set(["chatgpt", "claude", "gemini"]);
+
 /**
  * Background service worker.
  *
- * ChatGPT follow-ups complete in the content script (direct path) to avoid
- * nested CS↔SW messaging during long WebSocket handoffs.
+ * ChatGPT, Claude, and Gemini follow-ups complete in the content script
+ * (direct path) to avoid nested CS↔SW messaging during long streams.
  *
- * This worker remains the routing point for future non-ChatGPT / official APIs.
+ * This worker remains the routing point for future official-API providers.
  */
 chrome.runtime.onMessage.addListener(
   (
@@ -24,15 +27,15 @@ chrome.runtime.onMessage.addListener(
       return false;
     }
 
-    if (message.siteId === "chatgpt") {
-      // Should not normally arrive — content script handles ChatGPT locally.
+    if (IN_PAGE_SITES.has(message.siteId)) {
+      // Should not normally arrive — the content script handles these locally.
       log.warn(
-        `Received chatgpt ask-follow-up in SW; content script should handle this directly.`
+        `Received ${message.siteId} ask-follow-up in SW; content script should handle this directly.`
       );
       sendResponse({
         ok: false,
         error:
-          "ChatGPT follow-ups must run in the page script. Reload chatgpt.com and try again.",
+          "Follow-ups must run in the page script. Reload the tab and try again.",
       });
       return false;
     }
@@ -45,4 +48,4 @@ chrome.runtime.onMessage.addListener(
   }
 );
 
-log.debug("Service worker ready (ChatGPT follow-ups run in-page)");
+log.debug("Service worker ready (follow-ups run in-page)");
