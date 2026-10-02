@@ -1,0 +1,30 @@
+{
+  "manifest_version": 3,
+  "name": "AI Helper \u2014 Highlight to Thread",
+  "version": "0.2.4",
+  "description": "Highlight text in ChatGPT, Claude, or Gemini replies and ask follow-ups in a sidebar thread without polluting the main chat.",
+  "permissions": [
+    "storage"
+  ],
+  "host_permissions": [
+    "https://chatgpt.com/*",
+    "https://claude.ai/*",
+    "https://gemini.google.com/*"
+  ],
+  "background": {
+    "service_worker": "service-worker.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://chatgpt.com/*",
+        "https://claude.ai/*",
+        "https://gemini.google.com/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_start"
+    }
+  ]
+}
