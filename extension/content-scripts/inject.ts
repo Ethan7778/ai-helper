@@ -2,10 +2,13 @@ import { createChatGptAdapter } from "../adapters/chatgpt";
 import { createClaudeAdapter } from "../adapters/claude";
 import { createGeminiAdapter } from "../adapters/gemini";
 import { bootEngine } from "../core/engine";
+import { installSidebarInputGuard } from "../core/input-guard";
 import { BUILD_TIME, createLogger, DEBUG } from "../core/log";
 import type { SiteAdapter } from "../core/types";
 
 const log = createLogger();
+
+installSidebarInputGuard();
 
 const ADAPTERS: Record<string, () => SiteAdapter> = {
   "chatgpt.com": createChatGptAdapter,
@@ -35,4 +38,10 @@ async function main(): Promise<void> {
   }
 }
 
-void main();
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", () => void main(), {
+    once: true,
+  });
+} else {
+  void main();
+}

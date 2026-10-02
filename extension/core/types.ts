@@ -21,9 +21,17 @@ export interface Thread {
   sideMeta?: Record<string, string>;
 }
 
+/** How the Ask button captures a highlight on this site. */
+export type SelectionStrategy = "native" | "pointer";
+
 /** Site-specific hooks so the core engine stays agnostic of host DOM. */
 export interface SiteAdapter {
   siteId: string;
+  /**
+   * ChatGPT's selected-text overlay can replace the browser selection with a
+   * tiny fragment; use `"pointer"` there. Other sites keep `"native"`.
+   */
+  selectionStrategy?: SelectionStrategy;
   getConversationId(): string;
   getMessageContainers(): HTMLElement[];
   getMessageId(el: HTMLElement): string;

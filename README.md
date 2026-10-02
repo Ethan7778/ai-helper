@@ -14,7 +14,7 @@ Each site answers sidebar questions through **your own logged-in session** on th
 
 Download the prebuilt zip from the repo:
 
-- [`releases/ai-helper-v0.2.0.zip`](./releases/ai-helper-v0.2.0.zip)
+- [`releases/ai-helper-v0.2.4.zip`](./releases/ai-helper-v0.2.4.zip)
 
 Then:
 
@@ -37,9 +37,9 @@ When a new zip is published, replace the folder contents, click **Reload** on th
 | The release zip | The unzipped folder (the one with `manifest.json` inside) |
 | A clone of the repo | `extension/dist` — after running the build |
 
-Do **not** load `extension/` itself. It has a `manifest.json` but no compiled `content.js`, so Chrome loads it without error and the extension silently does nothing. On macOS, also make sure you picked the inner folder if Archive Utility created `ai-helper-v0.2.0/ai-helper-v0.2.0/`.
+Do **not** load `extension/` itself. It has a `manifest.json` but no compiled `content.js`, so Chrome loads it without error and the extension silently does nothing. On macOS, also make sure you picked the inner folder if Archive Utility created `ai-helper-v0.2.4/ai-helper-v0.2.4/`.
 
-The version on the `chrome://extensions` card should match the zip name (e.g. `0.2.0`).
+The version on the `chrome://extensions` card should match the zip name (e.g. `0.2.4`).
 
 ### Build from source
 

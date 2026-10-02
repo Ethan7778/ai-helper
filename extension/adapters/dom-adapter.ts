@@ -1,10 +1,12 @@
 import { queryFirst, waitForElement } from "../core/dom";
 import { createLogger } from "../core/log";
-import type { SiteAdapter } from "../core/types";
+import type { SelectionStrategy, SiteAdapter } from "../core/types";
 
 /** Everything site-specific about finding assistant replies in a chat page. */
 export interface DomAdapterConfig {
   siteId: string;
+  /** How the Ask button should capture highlights on this site. */
+  selectionStrategy?: SelectionStrategy;
   /** Stable markers for an assistant turn, most stable first. */
   assistantSelectors: string[];
   /** Used only when none of `assistantSelectors` match (UI variants / A/B tests). */
@@ -88,6 +90,7 @@ export function createDomAdapter(config: DomAdapterConfig): SiteAdapter {
 
   const adapter: SiteAdapter = {
     siteId: config.siteId,
+    selectionStrategy: config.selectionStrategy,
 
     getConversationId(): string {
       return (

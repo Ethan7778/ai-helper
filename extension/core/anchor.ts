@@ -4,6 +4,8 @@ import type { Thread } from "./types";
 
 const log = createLogger("anchor");
 
+// ─── Text-offset helpers ────────────────────────────────────────────────
+
 /**
  * Convert a DOM position (node + offset) into a plain-text character offset
  * relative to `root`, by walking text nodes with a TreeWalker.
@@ -85,22 +87,186 @@ function filterNonOverlapping(
   return kept;
 }
 
+// ─── Rect helpers ───────────────────────────────────────────────────────
+
+/** True when a DOMRect has positive dimensions and a finite top. */
+function usableRect(rect: DOMRect): boolean {
+  return (rect.width > 0 || rect.height > 0) && Number.isFinite(rect.top);
+}
+
+/** Get a usable bounding rect for a Range, falling back to client rects. */
+function rangeRect(range: Range): DOMRect {
+  let rect = range.getBoundingClientRect();
+  if (!usableRect(rect)) {
+    const rects = range.getClientRects();
+    if (rects.length > 0) rect = rects[0]!;
+  }
+  return rect;
+}
+
+/** Walk client rects back-to-front and return the last usable one. */
+function rangePlacementRect(range: Range): DOMRect {
+  const rects = range.getClientRects();
+  for (let i = rects.length - 1; i >= 0; i--) {
+    const rect = rects[i]!;
+    if (usableRect(rect)) return rect;
+  }
+  return rangeRect(range);
+}
+
+/** Placement rect for a selection, preferring the focus/caret end. */
+function selectionPlacementRect(sel: Selection, range: Range): DOMRect {
+  if (sel.focusNode) {
+    try {
+      const caret = document.createRange();
+      caret.setStart(sel.focusNode, sel.focusOffset);
+      caret.collapse(true);
+      const caretRect = caret.getBoundingClientRect();
+      if (usableRect(caretRect)) return caretRect;
+    } catch {
+      // Fall through to range-based logic.
+    }
+  }
+  const rects = range.getClientRects();
+  if (rects.length > 0) {
+    const focusIsStart =
+      sel.focusNode === range.startContainer &&
+      sel.focusOffset === range.startOffset;
+    const rect = focusIsStart ? rects[0]! : rects[rects.length - 1]!;
+    if (usableRect(rect)) return rect;
+  }
+  return rangeRect(range);
+}
+
+// ─── Whitespace normalisation ───────────────────────────────────────────
+
+interface WhitespaceMap {
+  text: string;
+  starts: number[];
+  ends: number[];
+}
+
+/**
+ * Collapse runs of whitespace to a single space, keeping parallel
+ * arrays that map each normalised character back to the original range.
+ */
+function normalizeWhitespaceWithMap(text: string): WhitespaceMap {
+  let out = "";
+  const starts: number[] = [];
+  const ends: number[] = [];
+  for (let i = 0; i < text.length; ) {
+    if (/\s/.test(text[i]!)) {
+      const start = i;
+      while (i < text.length && /\s/.test(text[i]!)) i++;
+      out += " ";
+      starts.push(start);
+      ends.push(i);
+    } else {
+      out += text[i];
+      starts.push(i);
+      ends.push(i + 1);
+      i++;
+    }
+  }
+  return { text: out, starts, ends };
+}
+
+// ─── Selection anchor types & core logic ────────────────────────────────
+
 export interface SelectionAnchor {
   messageRoot: HTMLElement;
   start: number;
   end: number;
   quotedText: string;
   rect: DOMRect;
+  placementRect?: DOMRect;
 }
 
 /** Site hook: message root containing a node, when it isn't in the known roots. */
 export type RootForNode = (node: Node) => HTMLElement | null;
 
 /**
+ * Try to recover a selection anchor by fuzzy-matching `quotedText` across
+ * all message roots (whitespace-normalised).  Picks the candidate whose
+ * bounding rect is closest to `selectionRect`.
+ */
+function recoverSelectionAnchor(
+  messageRoots: HTMLElement[],
+  quotedText: string,
+  selectionRect: DOMRect
+): SelectionAnchor | null {
+  const wanted = normalizeWhitespaceWithMap(quotedText).text.trim();
+  if (!wanted) return null;
+
+  const sx = selectionRect.left + selectionRect.width / 2;
+  const sy = selectionRect.top + selectionRect.height / 2;
+
+  let best: { anchor: SelectionAnchor; score: number } | null = null;
+
+  for (const root of messageRoots) {
+    const raw = getPlainText(root);
+    if (!raw) continue;
+
+    const mapped = normalizeWhitespaceWithMap(raw);
+    let from = 0;
+
+    while (from <= mapped.text.length - wanted.length) {
+      const at = mapped.text.indexOf(wanted, from);
+      if (at < 0) break;
+
+      const last = at + wanted.length - 1;
+      const start = mapped.starts[at];
+      const end = mapped.ends[last];
+
+      if (start == null || end == null || start >= end) {
+        from = at + 1;
+        continue;
+      }
+
+      const candidateRange = rangeFromOffsets(root, start, end);
+      const candidateRect = candidateRange?.getBoundingClientRect();
+      const rect =
+        candidateRect && usableRect(candidateRect)
+          ? candidateRect
+          : root.getBoundingClientRect();
+
+      const cx = rect.left + rect.width / 2;
+      const cy = rect.top + rect.height / 2;
+
+      const rootRect = root.getBoundingClientRect();
+      const overlapsRoot =
+        usableRect(selectionRect) &&
+        selectionRect.right >= rootRect.left &&
+        selectionRect.left <= rootRect.right &&
+        selectionRect.bottom >= rootRect.top &&
+        selectionRect.top <= rootRect.bottom;
+
+      const score = Math.hypot(cx - sx, cy - sy) + (overlapsRoot ? 0 : 1e4);
+      const anchor: SelectionAnchor = {
+        messageRoot: root,
+        start,
+        end,
+        quotedText,
+        rect,
+        placementRect: candidateRange
+          ? rangePlacementRect(candidateRange)
+          : rect,
+      };
+
+      if (!best || score < best.score) best = { anchor, score };
+      from = at + 1;
+    }
+  }
+
+  return best?.anchor ?? null;
+}
+
+/**
  * If the current window selection lies entirely inside one of the given
  * message roots, return its character offsets and bounding rect.
  * Falls back to `findRootForNode` when the host wraps the selection in a node
- * outside the registered roots.
+ * outside the registered roots, and to `recoverSelectionAnchor` when offsets
+ * can't be resolved.
  */
 export function getSelectionAnchor(
   messageRoots: HTMLElement[],
@@ -116,6 +282,12 @@ export function getSelectionAnchor(
   const startOffset = range.startOffset;
   const endOffset = range.endOffset;
 
+  const quotedText = range.toString();
+  if (!quotedText.trim()) return null;
+
+  const rect = rangeRect(range);
+  const placementRect = selectionPlacementRect(sel, range);
+
   let messageRoot =
     messageRoots.find(
       (root) =>
@@ -129,43 +301,33 @@ export function getSelectionAnchor(
       !messageRoot.contains(startContainer) ||
       !messageRoot.contains(endContainer)
     ) {
-      return null;
+      return recoverSelectionAnchor(messageRoots, quotedText, rect);
     }
   }
 
   const start = getTextOffset(messageRoot, startContainer, startOffset);
   const end = getTextOffset(messageRoot, endContainer, endOffset);
   if (start < 0 || end < 0 || start >= end) {
-    return null;
+    return recoverSelectionAnchor(messageRoots, quotedText, rect);
   }
 
-  const quotedText = range.toString();
-  if (!quotedText.trim()) {
-    return null;
-  }
-
-  let rect = range.getBoundingClientRect();
-  if ((!rect.width && !rect.height) || Number.isNaN(rect.top)) {
-    const rects = range.getClientRects();
-    if (rects.length > 0) {
-      rect = rects[0]!;
-    }
-  }
-
-  return {
-    messageRoot,
-    start,
-    end,
-    quotedText,
-    rect,
-  };
+  return { messageRoot, start, end, quotedText, rect, placementRect };
 }
 
 /** Recompute a viewport rect for a previously captured selection anchor. */
 export function getAnchorRect(anchor: SelectionAnchor): DOMRect | null {
   if (!anchor.messageRoot.isConnected) return null;
   const range = rangeFromOffsets(anchor.messageRoot, anchor.start, anchor.end);
-  return range?.getBoundingClientRect() ?? null;
+  return range ? rangeRect(range) : null;
+}
+
+/** Recompute a placement rect for a previously captured selection anchor. */
+export function getAnchorPlacementRect(
+  anchor: SelectionAnchor
+): DOMRect | null {
+  if (!anchor.messageRoot.isConnected) return null;
+  const range = rangeFromOffsets(anchor.messageRoot, anchor.start, anchor.end);
+  return range ? rangePlacementRect(range) : null;
 }
 
 function rangeFromOffsets(
@@ -211,9 +373,185 @@ function rangeFromOffsets(
   }
 }
 
+// ─── Pointer selection strategy ─────────────────────────────────────────
+
+interface CaretPoint {
+  node: Node;
+  offset: number;
+}
+
+interface PointerSelectionStart extends CaretPoint {
+  messageRoot: HTMLElement;
+}
+
+/** Number of characters spanned by an anchor. */
+function selectionSpan(anchor: SelectionAnchor): number {
+  return Math.max(0, anchor.end - anchor.start);
+}
+
+/**
+ * ChatGPT occasionally replaces a just-finished selection with a tiny portal
+ * fragment (observed as "et"). Keep a much better drag snapshot instead of
+ * accepting that host-generated truncation.
+ */
+function chooseReleasedAnchor(
+  current: SelectionAnchor | null,
+  bestDrag: SelectionAnchor | null
+): SelectionAnchor | null {
+  if (!current) return bestDrag;
+  if (!bestDrag || current.messageRoot !== bestDrag.messageRoot) return current;
+  const currentSpan = selectionSpan(current);
+  const bestSpan = selectionSpan(bestDrag);
+  const tinyHostFragment =
+    bestSpan >= 8 && currentSpan < bestSpan && currentSpan <= 4;
+  return tinyHostFragment ? bestDrag : current;
+}
+
+/**
+ * Chrome exposes `caretRangeFromPoint`; `caretPositionFromPoint` is the
+ * standards path.
+ */
+function caretPointFromClient(x: number, y: number): CaretPoint | null {
+  const doc = document as Document & {
+    caretPositionFromPoint?(
+      x: number,
+      y: number
+    ): { offsetNode: Node; offset: number } | null;
+    caretRangeFromPoint?(x: number, y: number): Range | null;
+  };
+
+  try {
+    const pos = doc.caretPositionFromPoint?.(x, y);
+    if (pos?.offsetNode) {
+      return { node: pos.offsetNode, offset: pos.offset };
+    }
+  } catch {
+    // Fall through to Chrome's legacy API.
+  }
+
+  try {
+    const range = doc.caretRangeFromPoint?.(x, y);
+    if (range) {
+      return { node: range.startContainer, offset: range.startOffset };
+    }
+  } catch {
+    // A host overlay may briefly make a point non-resolvable.
+  }
+
+  return null;
+}
+
+/** Find the message root that contains `node`. */
+function messageRootForNode(
+  messageRoots: HTMLElement[],
+  node: Node,
+  findRootForNode?: RootForNode
+): HTMLElement | null {
+  return (
+    messageRoots.find((root) => root.contains(node)) ??
+    findRootForNode?.(node) ??
+    null
+  );
+}
+
+/** Compare two caret points by document order. */
+function compareCaretPoints(a: CaretPoint, b: CaretPoint): number {
+  const ar = document.createRange();
+  const br = document.createRange();
+  try {
+    ar.setStart(a.node, a.offset);
+    ar.collapse(true);
+    br.setStart(b.node, b.offset);
+    br.collapse(true);
+    return ar.compareBoundaryPoints(Range.START_TO_START, br);
+  } catch {
+    return 0;
+  }
+}
+
+/** Build a Range spanning two arbitrary caret points (auto-ordered). */
+function rangeBetweenCarets(a: CaretPoint, b: CaretPoint): Range | null {
+  const range = document.createRange();
+  try {
+    if (compareCaretPoints(a, b) <= 0) {
+      range.setStart(a.node, a.offset);
+      range.setEnd(b.node, b.offset);
+    } else {
+      range.setStart(b.node, b.offset);
+      range.setEnd(a.node, a.offset);
+    }
+    return range;
+  } catch {
+    return null;
+  }
+}
+
+/** Tiny 1×1 rect at the given viewport coordinates. */
+function pointPlacementRect(x: number, y: number): DOMRect {
+  return new DOMRect(x, y, 1, 1);
+}
+
+/**
+ * Build an anchor from pointer coordinates without consulting
+ * `window.getSelection()`.  This is intentionally used by ChatGPT only:
+ * its selected-text overlay can replace the browser selection with a tiny
+ * fragment even while the user's drag is intact.
+ */
+function getPointerSelectionAnchor(
+  start: PointerSelectionStart,
+  x: number,
+  y: number,
+  messageRoots: HTMLElement[],
+  findRootForNode?: RootForNode
+): SelectionAnchor | null {
+  const endPoint = caretPointFromClient(x, y);
+  if (!endPoint) return null;
+
+  const endRoot = messageRootForNode(
+    messageRoots,
+    endPoint.node,
+    findRootForNode
+  );
+  if (!endRoot || endRoot !== start.messageRoot) return null;
+
+  const range = rangeBetweenCarets(start, endPoint);
+  if (!range || range.collapsed) return null;
+
+  const quotedText = range.toString();
+  if (!quotedText.trim()) return null;
+
+  const startOff = getTextOffset(
+    start.messageRoot,
+    range.startContainer,
+    range.startOffset
+  );
+  const endOff = getTextOffset(
+    start.messageRoot,
+    range.endContainer,
+    range.endOffset
+  );
+  if (startOff < 0 || endOff < 0 || startOff >= endOff) {
+    return null;
+  }
+
+  return {
+    messageRoot: start.messageRoot,
+    start: startOff,
+    end: endOff,
+    quotedText,
+    rect: rangeRect(range),
+    placementRect: pointPlacementRect(x, y),
+  };
+}
+
+// ─── Ask button ─────────────────────────────────────────────────────────
+
 export const ASK_BUTTON_ID = "ai-helper-ask-btn";
 
 export type AskButtonHandler = (anchor: SelectionAnchor) => void;
+
+const ASK_BG = "#0d0d0d";
+const ASK_BG_HOVER = "#2f2f2f";
 
 function styleAskButton(button: HTMLButtonElement): void {
   Object.assign(button.style, {
@@ -250,9 +588,6 @@ function styleAskButton(button: HTMLButtonElement): void {
   });
 }
 
-const ASK_BG = "#0d0d0d";
-const ASK_BG_HOVER = "#2f2f2f";
-
 function createAskButton(
   getPending: () => SelectionAnchor | null,
   onAsk: AskButtonHandler,
@@ -279,17 +614,29 @@ function createAskButton(
   return button;
 }
 
+// ─── Selection handler ──────────────────────────────────────────────────
+
 /**
  * Show a single floating "Ask about this" near the selection.
- * (We intentionally do not inject into ChatGPT's toolbar — that caused duplicates.)
+ * (We intentionally do not inject into ChatGPT's toolbar — that caused
+ * duplicates.)
+ *
+ * @param selectionStrategy  `"native"` reads `window.getSelection()`
+ *   (default).  `"pointer"` builds a Range from raw pointer coordinates,
+ *   useful when the host replaces the native selection mid-drag.
  */
 export function attachSelectionHandler(
   getMessageRoots: () => HTMLElement[],
   onAsk: AskButtonHandler,
-  findRootForNode?: RootForNode
+  findRootForNode?: RootForNode,
+  selectionStrategy: "native" | "pointer" = "native"
 ): () => void {
   let pending: SelectionAnchor | null = null;
   let selectionTimer: ReturnType<typeof setTimeout> | null = null;
+  let pointerSelecting = false;
+  let bestDragAnchor: SelectionAnchor | null = null;
+  let pointerReleaseLocked = false;
+  let pointerSelectionStart: PointerSelectionStart | null = null;
 
   const hide = () => {
     document
@@ -312,15 +659,16 @@ export function attachSelectionHandler(
   };
 
   const placeFloating = (anchor: SelectionAnchor) => {
+    const placementTarget = anchor.placementRect ?? anchor.rect;
     const existing = document.getElementById(
       ASK_BUTTON_ID
     ) as HTMLButtonElement | null;
     if (existing) {
-      positionFloating(existing, anchor.rect);
+      positionFloating(existing, placementTarget);
       return;
     }
     const button = createAskButton(() => pending, onAsk, hide);
-    positionFloating(button, anchor.rect);
+    positionFloating(button, placementTarget);
     document.body.appendChild(button);
     log.debug("Ask button shown");
   };
@@ -330,14 +678,32 @@ export function attachSelectionHandler(
     placeFloating(anchor);
   };
 
-  const refreshFromSelection = () => {
+  const refreshFromSelection = (allowHostMutation = true) => {
     const anchor = getSelectionAnchor(getMessageRoots(), findRootForNode);
     if (anchor) {
+      if (pointerSelecting) {
+        if (
+          !bestDragAnchor ||
+          bestDragAnchor.messageRoot !== anchor.messageRoot ||
+          selectionSpan(anchor) >= selectionSpan(bestDragAnchor)
+        ) {
+          bestDragAnchor = anchor;
+        }
+        show(anchor);
+        return;
+      }
+      // Immediately after pointer release, ChatGPT may swap the real range
+      // for a tiny overlay fragment.  Do not let that overwrite the captured
+      // quote.
+      if (!allowHostMutation || pointerReleaseLocked) {
+        if (pending) placeFloating(pending);
+        return;
+      }
       show(anchor);
       return;
     }
-    // ChatGPT often collapses the native selection when its own toolbar mounts.
-    // If we already captured an anchor, keep the floating button visible.
+    // ChatGPT often collapses the native selection when its own toolbar
+    // mounts.  If we already captured an anchor, keep the button visible.
     if (pending && document.getElementById(ASK_BUTTON_ID)) {
       return;
     }
@@ -355,8 +721,20 @@ export function attachSelectionHandler(
     }, delayMs);
   };
 
-  const onMouseUp = () => scheduleRefresh(40);
-  const onTouchEnd = () => scheduleRefresh(60);
+  // Capture during the event, before the host's selection toolbar can clear
+  // the native range.  A delayed-only read loses it on ChatGPT.
+  const onMouseUp = () => {
+    if (selectionStrategy === "pointer") return;
+    refreshFromSelection(!pointerReleaseLocked);
+    if (!pointerReleaseLocked) scheduleRefresh(40);
+  };
+
+  const onTouchEnd = () => {
+    if (selectionStrategy === "pointer") return;
+    refreshFromSelection(!pointerReleaseLocked);
+    if (!pointerReleaseLocked) scheduleRefresh(60);
+  };
+
   const onKeyUp = (e: KeyboardEvent) => {
     if (
       e.key === "Shift" ||
@@ -364,26 +742,119 @@ export function attachSelectionHandler(
       e.key === "Home" ||
       e.key === "End"
     ) {
+      pointerReleaseLocked = false;
+      refreshFromSelection();
       scheduleRefresh(40);
     }
   };
-  const onSelectionChange = () => scheduleRefresh(80);
 
-  const onPointerDown = (e: Event) => {
+  const onSelectionChange = () => {
+    if (selectionStrategy === "pointer") return;
+    refreshFromSelection(!pointerReleaseLocked);
+    if (!pointerReleaseLocked) scheduleRefresh(80);
+  };
+
+  const captureDragSelection = rafThrottle(() => refreshFromSelection());
+
+  const onPointerDown = (e: PointerEvent) => {
     const t = e.target;
     if (!(t instanceof Node)) return;
     if (t instanceof Element && t.closest("[data-ai-helper-ask='1']")) {
       return;
     }
-    // Click elsewhere dismisses our button (and pending).
-    if (pending) {
-      // Defer so a click on Ask still sees pending in mousedown/click handlers.
-      setTimeout(() => {
-        const sel = window.getSelection();
-        if (sel && !sel.isCollapsed) return;
-        hide();
-      }, 0);
+    bestDragAnchor = null;
+    pointerReleaseLocked = false;
+    pointerSelectionStart = null;
+    if (selectionTimer) clearTimeout(selectionTimer);
+    selectionTimer = null;
+
+    if (e.button !== 0) {
+      pointerSelecting = false;
+      return;
     }
+
+    if (selectionStrategy === "pointer") {
+      const roots = getMessageRoots();
+      const caret = caretPointFromClient(e.clientX, e.clientY);
+      const rootFromTarget = messageRootForNode(roots, t, findRootForNode);
+      const rootFromCaret = caret
+        ? messageRootForNode(roots, caret.node, findRootForNode)
+        : null;
+      const messageRoot =
+        caret && rootFromTarget?.contains(caret.node)
+          ? rootFromTarget
+          : rootFromCaret;
+      if (!caret || !messageRoot || !messageRoot.contains(caret.node)) {
+        pointerSelecting = false;
+        return;
+      }
+      pointerSelecting = true;
+      pointerSelectionStart = { ...caret, messageRoot };
+      hide();
+      return;
+    }
+
+    pointerSelecting = true;
+    // A new interaction invalidates the old quote, even if the host keeps
+    // its old native selection.  Clicks on Ask itself were excluded above.
+    hide();
+  };
+
+  const onPointerMove = (e: PointerEvent) => {
+    if (!pointerSelecting || (e.buttons & 1) === 0) return;
+
+    if (selectionStrategy === "pointer") {
+      if (!pointerSelectionStart) return;
+      const anchor = getPointerSelectionAnchor(
+        pointerSelectionStart,
+        e.clientX,
+        e.clientY,
+        getMessageRoots(),
+        findRootForNode
+      );
+      if (!anchor) return;
+      bestDragAnchor = anchor;
+      show(anchor);
+      return;
+    }
+
+    // Native strategy: snapshot continuously during the drag.  Some hosts
+    // move the selection into a portal before mouseup/selectionchange.
+    captureDragSelection();
+  };
+
+  const onPointerUp = (e: PointerEvent) => {
+    if (!pointerSelecting) return;
+
+    if (selectionStrategy === "pointer") {
+      const released = pointerSelectionStart
+        ? getPointerSelectionAnchor(
+            pointerSelectionStart,
+            e.clientX,
+            e.clientY,
+            getMessageRoots(),
+            findRootForNode
+          ) ?? bestDragAnchor
+        : bestDragAnchor;
+      pointerSelecting = false;
+      pointerSelectionStart = null;
+      bestDragAnchor = null;
+      if (released) show(released);
+      else hide();
+      pointerReleaseLocked = true;
+      return;
+    }
+
+    captureDragSelection.cancel();
+    const current = getSelectionAnchor(getMessageRoots(), findRootForNode);
+    const released = chooseReleasedAnchor(current, bestDragAnchor);
+    pointerSelecting = false;
+    bestDragAnchor = null;
+    if (released) show(released);
+    // Freeze the released quote until the next real pointer/keyboard
+    // selection interaction.  Host-generated selectionchange events must
+    // not shrink it.
+    pointerReleaseLocked = true;
   };
 
   const onKeyDown = (e: KeyboardEvent) => {
@@ -397,17 +868,17 @@ export function attachSelectionHandler(
       hide();
       return;
     }
-    const live = getSelectionAnchor(getMessageRoots(), findRootForNode);
-    const rect =
-      live && live.messageRoot === pending.messageRoot
-        ? live.rect
-        : getAnchorRect(pending);
-    if (!rect || (rect.width === 0 && rect.height === 0)) {
+    const rect = getAnchorRect(pending);
+    const placementRect = getAnchorPlacementRect(pending);
+    if (
+      !rect ||
+      !placementRect ||
+      (rect.width === 0 && rect.height === 0)
+    ) {
       document.getElementById(ASK_BUTTON_ID)?.remove();
       return;
     }
-    if (live) pending = live;
-    else pending = { ...pending, rect };
+    pending = { ...pending, rect, placementRect };
     placeFloating(pending);
   });
 
@@ -416,6 +887,8 @@ export function attachSelectionHandler(
   document.addEventListener("keyup", onKeyUp, true);
   document.addEventListener("keydown", onKeyDown, true);
   document.addEventListener("pointerdown", onPointerDown, true);
+  document.addEventListener("pointermove", onPointerMove, true);
+  document.addEventListener("pointerup", onPointerUp, true);
   document.addEventListener("selectionchange", onSelectionChange);
   window.addEventListener("scroll", onScroll, true);
 
@@ -425,13 +898,18 @@ export function attachSelectionHandler(
     document.removeEventListener("keyup", onKeyUp, true);
     document.removeEventListener("keydown", onKeyDown, true);
     document.removeEventListener("pointerdown", onPointerDown, true);
+    document.removeEventListener("pointermove", onPointerMove, true);
+    document.removeEventListener("pointerup", onPointerUp, true);
     document.removeEventListener("selectionchange", onSelectionChange);
     window.removeEventListener("scroll", onScroll, true);
+    captureDragSelection.cancel();
     onScroll.cancel();
     if (selectionTimer) clearTimeout(selectionTimer);
     hide();
   };
 }
+
+// ─── Highlight wrapping ─────────────────────────────────────────────────
 
 /** Remove previously injected highlight marks without deleting their text. */
 export function unwrapHighlights(root: HTMLElement): void {
@@ -482,7 +960,7 @@ function wrapTextRange(
   let current: Node | null = walker.nextNode();
   while (current) {
     const node = current as Text;
-    // Skip text inside marks we just added (shouldn't happen when applying end→start).
+    // Skip text inside marks we just added (shouldn't happen end→start).
     if (node.parentElement?.closest("mark[data-thread-id]")) {
       offset += node.data.length;
       current = walker.nextNode();

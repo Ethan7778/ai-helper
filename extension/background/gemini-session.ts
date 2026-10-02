@@ -58,7 +58,15 @@ interface PageTokens {
 }
 
 function pickToken(source: string, key: string): string {
-  return source.match(new RegExp(`"${key}":"([^"]*)"`))?.[1] ?? "";
+  const match = source.match(
+    new RegExp(`"${key}"\\s*:\\s*("(?:[^"\\\\]|\\\\.)*")`)
+  );
+  if (!match) return "";
+  try {
+    return JSON.parse(match[1]!);
+  } catch {
+    return "";
+  }
 }
 
 function tokensFrom(source: string, prefix: string): PageTokens | null {
@@ -72,7 +80,7 @@ function tokensFrom(source: string, prefix: string): PageTokens | null {
   };
 }
 
-async function getPageTokens(): Promise<PageTokens> {
+async function getPageTokens(signal?: AbortSignal): Promise<PageTokens> {
   const prefix = location.pathname.match(/^\/u\/\d+/)?.[0] ?? "";
   for (const script of Array.from(document.scripts)) {
     const text = script.textContent ?? "";
@@ -81,7 +89,10 @@ async function getPageTokens(): Promise<PageTokens> {
     if (tokens) return tokens;
   }
   // Page scripts can be replaced after hydration; the app shell still has them.
-  const res = await fetch(`${prefix}/app`, { credentials: "include" });
+  const res = await fetch(`${prefix}/app`, {
+    credentials: "include",
+    signal,
+  });
   const tokens = res.ok ? tokensFrom(await res.text(), prefix) : null;
   if (!tokens) throw new Error(SESSION_HELP);
   return tokens;
@@ -99,7 +110,39 @@ async function streamGenerate(
   responseId?: string;
   candidateId?: string;
 }> {
-  const tokens = await getPageTokens();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 60_000);
+  try {
+    return await streamGenerateWithSignal(
+      prompt,
+      continuation,
+      controller.signal,
+      onPartial
+    );
+  } catch (err) {
+    if (controller.signal.aborted) {
+      throw new Error(
+        "Gemini did not finish replying within 60 seconds. Reload Gemini and try again."
+      );
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function streamGenerateWithSignal(
+  prompt: string,
+  continuation: Continuation | null,
+  signal: AbortSignal,
+  onPartial?: (text: string) => void
+): Promise<{
+  reply: string;
+  conversationId?: string;
+  responseId?: string;
+  candidateId?: string;
+}> {
+  const tokens = await getPageTokens(signal);
   const lang = navigator.language || "en-US";
 
   const inner: unknown[] = new Array(INNER_LENGTH).fill(null);
@@ -133,6 +176,7 @@ async function streamGenerate(
       "X-Same-Domain": "1",
     },
     body,
+    signal,
   });
   if (!res.ok) {
     log.error(`StreamGenerate → HTTP ${res.status}`);
@@ -162,7 +206,11 @@ async function streamGenerate(
 
   if (state.error) throw new Error(state.error);
   const reply = cleanGeminiText(state.text);
-  if (!reply) throw new Error("Gemini returned an empty reply.");
+  if (!reply) {
+    throw new Error(
+      "Gemini returned no readable reply. Its web request or response format may have changed; report this error with extension version 0.2.4."
+    );
+  }
   log.debug(`Reply received (${reply.length} chars)`);
   return {
     reply,
@@ -202,6 +250,12 @@ export async function completeViaGeminiSession(
           await streamGenerate(buildFollowUpPrompt(promptArgs), continuation, onPartial)
         );
       } catch (err) {
+        if (
+          err instanceof Error &&
+          /within 60 seconds/.test(err.message)
+        ) {
+          throw err;
+        }
         log.debug("Could not continue side chat; starting a fresh one", err);
       }
     }

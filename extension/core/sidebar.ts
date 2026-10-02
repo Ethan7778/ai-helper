@@ -5,12 +5,16 @@ import { completeViaChatGptSession } from "../background/chatgpt-session";
 import { completeViaClaudeSession } from "../background/claude-session";
 import { completeViaGeminiSession } from "../background/gemini-session";
 import { setHtml } from "./html";
+import {
+  SIDEBAR_HOST_ID,
+  SIDEBAR_KEY_EVENT,
+} from "./input-guard";
 import { rafThrottle } from "./dom";
 import { createLogger } from "./log";
 
 const log = createLogger("sidebar");
 
-export const HOST_ID = "ai-helper-sidebar-host";
+export const HOST_ID = SIDEBAR_HOST_ID;
 const COMPOSER_MAX_HEIGHT = 160;
 const FONT_STACK = `-apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif`;
 
@@ -272,6 +276,12 @@ export class Sidebar {
   private expanded = new Set<string>();
   /** Unsent composer text per thread, so re-renders don't wipe it. */
   private drafts = new Map<string, string>();
+  /** Thread ids currently waiting on a reply. */
+  private sending = new Set<string>();
+  /** Last send error per thread, cleared on the next successful attempt. */
+  private errors = new Map<string, string>();
+  /** In-flight streaming text that should survive a full list rebuild. */
+  private partials = new Map<string, string>();
   private activeId: string | null = null;
   /** Start collapsed so we don't cover ChatGPT chrome until needed. */
   private collapsed = true;
@@ -288,6 +298,22 @@ export class Sidebar {
     }
     this.host = host;
     this.shadow = host.shadowRoot ?? host.attachShadow({ mode: "open" });
+    for (const type of [
+      "pointerdown",
+      "pointerup",
+      "mousedown",
+      "mouseup",
+      "click",
+      "beforeinput",
+      "input",
+      "paste",
+      "cut",
+      "copy",
+      "compositionstart",
+      "compositionend",
+    ] as const) {
+      this.shadow.addEventListener(type, (event) => event.stopPropagation());
+    }
     this.renderShell();
   }
 
@@ -317,6 +343,7 @@ export class Sidebar {
       `[data-thread-id="${CSS.escape(threadId)}"]`
     ) as HTMLElement | null;
     card?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    card?.querySelector("textarea")?.focus({ preventScroll: true });
   }
 
   /** Accordion: opening a thread closes the others; clicking the open one closes it. */
@@ -333,6 +360,7 @@ export class Sidebar {
 
   /** Update the in-flight assistant bubble without rebuilding the whole list. */
   patchAssistantReply(threadId: string, text: string): void {
+    this.partials.set(threadId, text);
     const card = this.shadow.querySelector(
       `[data-thread-id="${CSS.escape(threadId)}"]`
     );
@@ -397,6 +425,15 @@ export class Sidebar {
   }
 
   private renderList(): void {
+    const focused = this.shadow.activeElement;
+    const focusState =
+      focused instanceof HTMLTextAreaElement
+        ? {
+            id: focused.closest("[data-thread-id]")?.getAttribute("data-thread-id") ?? undefined,
+            start: focused.selectionStart,
+            end: focused.selectionEnd,
+          }
+        : null;
     if (this.threads.length === 0) {
       setHtml(
         this.listEl,
@@ -408,6 +445,14 @@ export class Sidebar {
     this.listEl.replaceChildren();
     for (const thread of this.threads) {
       this.listEl.appendChild(this.buildCard(thread));
+    }
+    for (const [id, text] of this.partials) this.patchAssistantReply(id, text);
+    if (focusState?.id) {
+      const input = this.listEl.querySelector(
+        `[data-thread-id="${CSS.escape(focusState.id)}"] textarea`
+      ) as HTMLTextAreaElement | null;
+      input?.focus({ preventScroll: true });
+      input?.setSelectionRange(focusState.start, focusState.end);
     }
   }
 
@@ -477,6 +522,8 @@ export class Sidebar {
     const input = document.createElement("textarea");
     input.rows = 1;
     input.placeholder = "Ask about this snippet…";
+    input.setAttribute("aria-label", "Ask about this snippet");
+    input.readOnly = this.sending.has(thread.id);
     input.value = this.drafts.get(thread.id) ?? "";
     const autoGrow = () => {
       input.style.overflowY = "hidden";
@@ -494,46 +541,56 @@ export class Sidebar {
     const send = document.createElement("button");
     send.type = "button";
     send.textContent = "Send";
+    send.disabled = this.sending.has(thread.id);
     const status = document.createElement("div");
     status.className = "status";
+    status.setAttribute("role", "status");
+    status.setAttribute("aria-live", "polite");
+    status.textContent = this.sending.has(thread.id)
+      ? "Waiting for a reply…"
+      : this.errors.get(thread.id) ?? "";
 
     const doSend = async () => {
       const question = input.value.trim();
-      if (!question) return;
-      send.disabled = true;
-      status.textContent = "";
+      if (!question || this.sending.has(thread.id)) return;
+      this.sending.add(thread.id);
+      this.errors.delete(thread.id);
+      this.drafts.set(thread.id, question);
+      this.renderList();
       const patch = rafThrottle((partial: string) =>
         this.patchAssistantReply(thread.id, partial)
       );
       try {
         const result = await this.callbacks.onSend(thread, question, patch);
         if (!result.ok) {
-          status.textContent = result.error || "Request failed";
+          this.errors.set(thread.id, result.error || "Request failed");
         } else {
-          input.value = "";
           this.drafts.delete(thread.id);
         }
       } catch (err) {
-        status.textContent = err instanceof Error ? err.message : String(err);
+        this.errors.set(
+          thread.id,
+          err instanceof Error ? err.message : String(err)
+        );
       } finally {
         patch.cancel();
-        send.disabled = false;
-        if (this.threads.some((t) => t.id === thread.id)) {
-          this.renderList();
-          this.focusThread(thread.id);
-        } else {
-          this.renderList();
-        }
+        this.sending.delete(thread.id);
+        this.partials.delete(thread.id);
+        this.renderList();
       }
     };
 
     send.addEventListener("click", () => void doSend());
-    input.addEventListener("keydown", (e) => {
+    const onKeyDown = (e: KeyboardEvent) => {
       // Shift+Enter inserts a newline; Enter during IME composition confirms text.
       if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
         e.preventDefault();
         void doSend();
       }
+    };
+    input.addEventListener("keydown", onKeyDown);
+    input.addEventListener(SIDEBAR_KEY_EVENT, (event) => {
+      onKeyDown((event as CustomEvent<KeyboardEvent>).detail);
     });
 
     composer.appendChild(input);

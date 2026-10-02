@@ -287,7 +287,8 @@ export async function bootEngine(adapter: SiteAdapter): Promise<() => void> {
     (anchor) => {
       void onAsk(anchor);
     },
-    adapter.getMessageRootForNode?.bind(adapter)
+    adapter.getMessageRootForNode?.bind(adapter),
+    adapter.selectionStrategy ?? "native"
   );
 
   const stopObserving = adapter.onNewMessage((el) => registerMessage(el));
