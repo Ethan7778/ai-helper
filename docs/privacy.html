@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Privacy Policy — AI Helper</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --ink: #1a1a1a;
+        --muted: #555;
+        --line: #e6e6e6;
+        --bg: #fafafa;
+      }
+      body {
+        margin: 0;
+        font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+        line-height: 1.55;
+        color: var(--ink);
+        background: var(--bg);
+      }
+      main {
+        max-width: 40rem;
+        margin: 0 auto;
+        padding: 2.5rem 1.25rem 4rem;
+      }
+      h1 {
+        font-size: 1.75rem;
+        margin: 0 0 0.35rem;
+      }
+      .meta {
+        color: var(--muted);
+        font-size: 0.95rem;
+        margin-bottom: 2rem;
+      }
+      h2 {
+        font-size: 1.15rem;
+        margin: 1.75rem 0 0.5rem;
+      }
+      p,
+      li {
+        color: var(--ink);
+      }
+      ul {
+        padding-left: 1.2rem;
+      }
+      a {
+        color: inherit;
+      }
+      hr {
+        border: none;
+        border-top: 1px solid var(--line);
+        margin: 2rem 0;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Privacy Policy</h1>
+      <p class="meta">
+        AI Helper — Highlight to Thread<br />
+        Last updated: October 2, 2026
+      </p>
+
+      <p>
+        This privacy policy describes how the
+        <strong>AI Helper — Highlight to Thread</strong> Chrome extension
+        (“the Extension”) handles information.
+      </p>
+
+      <h2>Summary</h2>
+      <ul>
+        <li>The Extension does <strong>not</strong> have its own backend server.</li>
+        <li>It does <strong>not</strong> sell your data or show ads.</li>
+        <li>
+          Follow-up questions are answered through
+          <strong>your existing logged-in session</strong> on ChatGPT, Claude, or
+          Gemini — the same way those sites normally work in your browser.
+        </li>
+        <li>
+          Thread history is stored locally in your browser with Chrome’s
+          <code>storage</code> API.
+        </li>
+      </ul>
+
+      <h2>Information the Extension stores</h2>
+      <p>
+        On your device, the Extension may store highlight threads for conversations
+        you use it on, including:
+      </p>
+      <ul>
+        <li>quoted / highlighted text,</li>
+        <li>your follow-up questions and the assistant replies in that thread,</li>
+        <li>
+          technical IDs needed to continue a side chat (for example conversation
+          or message identifiers used by the host site).
+        </li>
+      </ul>
+      <p>
+        This data stays in your browser profile via
+        <code>chrome.storage.local</code>. It is not uploaded to an AI Helper
+        server, because there isn’t one.
+      </p>
+
+      <h2>Information sent to third parties</h2>
+      <p>
+        When you send a follow-up from the sidebar, the Extension uses the page’s
+        normal network requests to the site you are on:
+      </p>
+      <ul>
+        <li><a href="https://chatgpt.com">chatgpt.com</a></li>
+        <li><a href="https://claude.ai">claude.ai</a></li>
+        <li><a href="https://gemini.google.com">gemini.google.com</a></li>
+      </ul>
+      <p>
+        Those requests include the highlighted snippet, surrounding context the
+        Extension gathers from the visible chat, and your question, so the host
+        site can generate a reply. How those companies handle that information is
+        governed by their own privacy policies and terms.
+      </p>
+      <p>
+        The Extension only requests access to those three sites (plus local
+        storage). It does not read your browsing history elsewhere.
+      </p>
+
+      <h2>Permissions</h2>
+      <ul>
+        <li>
+          <strong>storage</strong> — save and restore highlight threads on your
+          device.
+        </li>
+        <li>
+          <strong>Host access</strong> to ChatGPT, Claude, and Gemini — inject the
+          highlight UI and send follow-ups through your logged-in session on those
+          pages.
+        </li>
+      </ul>
+
+      <h2>Children</h2>
+      <p>
+        The Extension is not directed at children under 13, and we do not knowingly
+        collect personal information from children.
+      </p>
+
+      <h2>Changes</h2>
+      <p>
+        If this policy changes, the “Last updated” date above will be revised.
+        Continued use of the Extension after a change means you accept the updated
+        policy.
+      </p>
+
+      <h2>Contact</h2>
+      <p>
+        Questions about this policy: open an issue on the project repository at
+        <a href="https://github.com/Ethan7778/ai-helper"
+          >github.com/Ethan7778/ai-helper</a
+        >.
+      </p>
+
+      <hr />
+      <p class="meta">
+        This page is intended for the Chrome Web Store privacy-policy requirement.
+      </p>
+    </main>
+  </body>
+</html>

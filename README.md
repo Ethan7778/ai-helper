@@ -14,11 +14,14 @@ Each site answers sidebar questions through **your own logged-in session** on th
 
 Download the prebuilt zip from the repo:
 
-- [`releases/ai-helper-v0.2.4.zip`](./releases/ai-helper-v0.2.4.zip)
+- [`releases/ai-helper-v0.2.5-store.zip`](./releases/ai-helper-v0.2.5-store.zip) (Chrome Web Store package)
+- Or the same build unpacked: load `extension/dist` after `npm run build`
+
+Chrome Web Store publish steps (icons, privacy policy, listing copy): see [`docs/CHROME_WEB_STORE.md`](./docs/CHROME_WEB_STORE.md).
 
 Then:
 
-1. Unzip — you should see `manifest.json`, `content.js`, and `service-worker.js`
+1. Unzip — you should see `manifest.json`, `content.js`, `service-worker.js`, and an `icons/` folder
 2. Open `chrome://extensions`
 3. Enable **Developer mode**
 4. **Load unpacked** → select the unzipped folder
@@ -37,9 +40,9 @@ When a new zip is published, replace the folder contents, click **Reload** on th
 | The release zip | The unzipped folder (the one with `manifest.json` inside) |
 | A clone of the repo | `extension/dist` — after running the build |
 
-Do **not** load `extension/` itself. It has a `manifest.json` but no compiled `content.js`, so Chrome loads it without error and the extension silently does nothing. On macOS, also make sure you picked the inner folder if Archive Utility created `ai-helper-v0.2.4/ai-helper-v0.2.4/`.
+Do **not** load `extension/` itself. It has a `manifest.json` but no compiled `content.js`, so Chrome loads it without error and the extension silently does nothing. On macOS, also make sure you picked the inner folder if Archive Utility nested the folder.
 
-The version on the `chrome://extensions` card should match the zip name (e.g. `0.2.4`).
+The version on the `chrome://extensions` card should match the zip name (e.g. `0.2.5`).
 
 ### Build from source
 

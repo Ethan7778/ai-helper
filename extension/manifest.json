@@ -1,8 +1,13 @@
 {
   "manifest_version": 3,
   "name": "AI Helper — Highlight to Thread",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "description": "Highlight text in ChatGPT, Claude, or Gemini replies and ask follow-ups in a sidebar thread without polluting the main chat.",
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
   "permissions": ["storage"],
   "host_permissions": [
     "https://chatgpt.com/*",
