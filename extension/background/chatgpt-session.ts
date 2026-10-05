@@ -340,6 +340,7 @@ async function recoverViaWebSocket(
     let cmdId = 4;
     let framesSeen = 0;
     let encodedSeen = 0;
+    let sawComplete = false;
 
     const emit = (text: string) => {
       if (!text.trim()) return;
@@ -371,7 +372,13 @@ async function recoverViaWebSocket(
     };
 
     const timer = setTimeout(() => {
-      if (reply.trim()) {
+      if (reply.trim() && sawComplete) {
+        finish(true);
+      } else if (reply.trim()) {
+        log.warn(
+          `WebSocket handoff timed out with incomplete reply ` +
+            `(${reply.length} chars, frames=${framesSeen}, encoded=${encodedSeen}); keeping partial`
+        );
         finish(true);
       } else {
         finish(
@@ -457,11 +464,11 @@ async function recoverViaWebSocket(
             reply = parsed.reply;
             emit(reply);
           }
-          if (
-            (encoded.includes("[DONE]") ||
-              parsed.eventTypes.includes("message_stream_complete")) &&
-            reply.trim()
-          ) {
+          const streamDone =
+            encoded.includes("[DONE]") ||
+            parsed.eventTypes.includes("message_stream_complete");
+          if (streamDone && reply.trim()) {
+            sawComplete = true;
             finish(true);
             return;
           }
@@ -475,6 +482,7 @@ async function recoverViaWebSocket(
           }
           if (direct.messageId) messageId = direct.messageId;
           if (direct.finished && reply.trim()) {
+            sawComplete = true;
             finish(true);
             return;
           }
@@ -584,6 +592,79 @@ async function parseConversationStream(
       `topicId=${parsed.topicId || "none"}`
   );
 
+  // Buffering handoff: ChatGPT often ships a short partial in the HTTP SSE,
+  // then finishes the turn on the WebSocket topic. Treat any handoff/topic as
+  // incomplete until WS recovery — returning early here truncates mid-sentence.
+  if (parsed.handedOff || parsed.topicId) {
+    if (!parsed.topicId) {
+      if (parsed.reply.trim()) {
+        log.warn(
+          "Handoff without topic id; keeping buffered SSE partial " +
+            `(${parsed.reply.length} chars)`
+        );
+        emit(parsed.reply);
+        return {
+          reply: parsed.reply,
+          conversationId: parsed.conversationId,
+          messageId: parsed.messageId,
+        };
+      }
+      log.error(
+        `Empty SSE with no topic to resume; head=${text.slice(0, 400)}`
+      );
+      throw new Error(
+        "ChatGPT handed off the stream without a topic id. Reload and try again."
+      );
+    }
+
+    if (parsed.reply.trim()) {
+      emit(parsed.reply);
+      log.debug(
+        `Buffered SSE partial (${parsed.reply.length} chars); recovering rest via websocket`
+      );
+    } else {
+      log.debug("Recovering handoff via websocket");
+    }
+
+    try {
+      const recovered = await recoverViaWebSocket(
+        accessToken,
+        userAgent,
+        parsed.topicId,
+        onPartial
+      );
+      const reply =
+        recovered.reply.length >= parsed.reply.length
+          ? recovered.reply
+          : parsed.reply;
+      log.debug(
+        `Handoff recovered via websocket (sse=${parsed.reply.length}, ws=${recovered.reply.length}, using=${reply.length})`
+      );
+      emit(reply);
+      return {
+        reply,
+        conversationId: recovered.conversationId || parsed.conversationId,
+        messageId: recovered.messageId || parsed.messageId,
+      };
+    } catch (err) {
+      if (parsed.reply.trim()) {
+        log.warn(
+          `Handoff recovery failed; using buffered SSE partial (${parsed.reply.length} chars):`,
+          err instanceof Error ? err.message : err
+        );
+        emit(parsed.reply);
+        return {
+          reply: parsed.reply,
+          conversationId: parsed.conversationId,
+          messageId: parsed.messageId,
+        };
+      }
+      throw new Error(
+        `Handoff recovery failed: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+  }
+
   if (parsed.reply.trim()) {
     emit(parsed.reply);
     return {
@@ -593,37 +674,10 @@ async function parseConversationStream(
     };
   }
 
-  // Temporary side chats never show up on GET /conversation, so the
-  // WebSocket turn topic is the only way to recover a handed-off stream.
-  if (!parsed.topicId) {
-    log.error(
-      `Empty SSE with no topic to resume; head=${text.slice(0, 400)}`
-    );
-    throw new Error(
-      "ChatGPT handed off the stream without a topic id. Reload and try again."
-    );
-  }
-
-  log.debug("Recovering handoff via websocket");
-  try {
-    const recovered = await recoverViaWebSocket(
-      accessToken,
-      userAgent,
-      parsed.topicId,
-      onPartial
-    );
-    log.debug("Handoff recovered via websocket");
-    emit(recovered.reply);
-    return {
-      reply: recovered.reply,
-      conversationId: recovered.conversationId || parsed.conversationId,
-      messageId: recovered.messageId || parsed.messageId,
-    };
-  } catch (err) {
-    throw new Error(
-      `Handoff recovery failed: ${err instanceof Error ? err.message : String(err)}`
-    );
-  }
+  log.error(`Empty SSE with no handoff; head=${text.slice(0, 400)}`);
+  throw new Error(
+    "ChatGPT returned an empty reply. Reload and try again."
+  );
 }
 
 async function postConversation(

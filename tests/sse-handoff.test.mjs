@@ -38,6 +38,23 @@ function test(name, fn) {
   }
 }
 
+test("detects handoff even when a buffered partial reply is present", () => {
+  const raw = [
+    'data: {"message":{"id":"m1","author":{"role":"assistant"},"content":{"content_type":"text","parts":["If you watch a game at"]}},"conversation_id":"conv-partial"}',
+    "",
+    'data: {"type":"stream_handoff","conversation_id":"conv-partial","options":[{"type":"subscribe_ws_topic","topic_id":"conversation-turn-partial1"}]}',
+    "",
+    "data: [DONE]",
+    "",
+  ].join("\n");
+
+  const parsed = parseConversationSseText(raw);
+  assert.equal(parsed.reply, "If you watch a game at");
+  assert.equal(parsed.handedOff, true);
+  assert.equal(parsed.topicId, "conversation-turn-partial1");
+  assert.equal(parsed.conversationId, "conv-partial");
+});
+
 test("detects resume_conversation_token handoff and conversation id", () => {
   // Mirrors the empty-reply log the extension hits on chatgpt.com today.
   const raw = [

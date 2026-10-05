@@ -10,7 +10,7 @@ export interface SseParseResult {
   /** Present when ChatGPT hands the turn off to WS / resume SSE. */
   topicId?: string;
   resumeToken?: string;
-  /** True when the stream only handed off (WS/topic) and had no inline text. */
+  /** True when ChatGPT handed the turn off to WS / resume SSE (may still have a buffered partial). */
   handedOff: boolean;
   eventTypes: string[];
 }
@@ -198,7 +198,9 @@ export function parseConversationSseText(text: string): SseParseResult {
     messageId,
     topicId,
     resumeToken,
-    handedOff: handedOff && !reply.trim(),
+    // True whenever ChatGPT handed the turn off — even if a buffered partial
+    // already arrived inline. Callers must recover via the topic when set.
+    handedOff,
     eventTypes,
   };
 }

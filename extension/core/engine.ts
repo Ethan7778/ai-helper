@@ -127,6 +127,29 @@ export async function bootEngine(adapter: SiteAdapter): Promise<() => void> {
         }, 1200);
       }
     },
+    onDeleteThread: async (threadId) => {
+      if (!isExtensionAlive()) {
+        markDead();
+        return;
+      }
+      const next = threads.filter((t) => t.id !== threadId);
+      if (next.length === threads.length) return;
+      const previous = threads;
+      threads = next;
+      try {
+        await persist();
+      } catch (err) {
+        threads = previous;
+        sidebar.setThreads(threads);
+        log.warn(
+          "could not delete thread:",
+          err instanceof Error ? err.message : err
+        );
+        return;
+      }
+      sidebar.setThreads(threads);
+      refreshHighlights();
+    },
     onSend: async (thread, question, onPartial) => {
       if (!isExtensionAlive()) {
         markDead();

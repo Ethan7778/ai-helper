@@ -486,16 +486,14 @@ function rangeBetweenCarets(a: CaretPoint, b: CaretPoint): Range | null {
   }
 }
 
-/** Tiny 1×1 rect at the given viewport coordinates. */
-function pointPlacementRect(x: number, y: number): DOMRect {
-  return new DOMRect(x, y, 1, 1);
-}
-
 /**
  * Build an anchor from pointer coordinates without consulting
  * `window.getSelection()`.  This is intentionally used by ChatGPT only:
  * its selected-text overlay can replace the browser selection with a tiny
  * fragment even while the user's drag is intact.
+ *
+ * Placement still uses the selection range (like Claude/Gemini), not the
+ * live cursor point — otherwise the Ask button follows the mouse.
  */
 function getPointerSelectionAnchor(
   start: PointerSelectionStart,
@@ -540,7 +538,7 @@ function getPointerSelectionAnchor(
     end: endOff,
     quotedText,
     rect: rangeRect(range),
-    placementRect: pointPlacementRect(x, y),
+    placementRect: rangePlacementRect(range),
   };
 }
 

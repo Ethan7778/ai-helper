@@ -20,6 +20,7 @@ const FONT_STACK = `-apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sa
 
 export interface SidebarCallbacks {
   onFocusThread: (threadId: string) => void;
+  onDeleteThread: (threadId: string) => void | Promise<void>;
   onSend: (
     thread: Thread,
     question: string,
@@ -53,12 +54,13 @@ const STYLES = `
   writing-mode: vertical-rl;
   text-orientation: mixed;
   letter-spacing: 0.04em;
-  display: none;
-}
-.fab.visible {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  transition: right 0.2s ease;
+}
+.fab.panel-open {
+  right: calc(min(360px, 100vw) + 10px);
 }
 .panel {
   position: fixed;
@@ -93,22 +95,12 @@ const STYLES = `
   font-size: 14px;
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 8px;
 }
 .header span {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-.collapse-btn {
-  border: none;
-  background: transparent;
-  cursor: pointer;
-  font-size: 18px;
-  line-height: 1;
-  color: #555;
-  padding: 4px;
 }
 .list {
   flex: 1;
@@ -125,7 +117,6 @@ const STYLES = `
   border: 1px solid #e4e4e0;
   border-radius: 8px;
   margin-bottom: 10px;
-  overflow: hidden;
 }
 .card.active {
   border-color: #c9a227;
@@ -143,20 +134,56 @@ const STYLES = `
   flex: 1;
   min-width: 0;
 }
-.close-btn {
+.menu {
+  position: relative;
   flex-shrink: 0;
+}
+.menu-btn {
   border: none;
   background: transparent;
   color: #888;
-  font-size: 14px;
+  font-size: 18px;
   line-height: 1;
   padding: 2px 6px;
   cursor: pointer;
   border-radius: 4px;
+  letter-spacing: 0.02em;
 }
-.close-btn:hover {
+.menu-btn:hover,
+.menu.open .menu-btn {
   background: #eee;
   color: #333;
+}
+.menu-dropdown {
+  display: none;
+  position: absolute;
+  top: 100%;
+  right: 0;
+  min-width: 120px;
+  padding: 4px;
+  background: #fff;
+  border: 1px solid #e4e4e0;
+  border-radius: 8px;
+  box-shadow: 0 6px 18px rgba(0,0,0,0.12);
+  z-index: 2;
+}
+.menu.open .menu-dropdown {
+  display: block;
+}
+.menu-item {
+  display: block;
+  width: 100%;
+  border: none;
+  background: transparent;
+  text-align: left;
+  padding: 8px 10px;
+  border-radius: 6px;
+  font: inherit;
+  color: #a33;
+  cursor: pointer;
+}
+.menu-item:hover {
+  background: #f5eaea;
 }
 .reply.streaming .body::after {
   content: "|";
@@ -175,11 +202,6 @@ const STYLES = `
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
-}
-.meta {
-  margin-top: 4px;
-  font-size: 11px;
-  color: #888;
 }
 .card-body {
   display: none;
@@ -385,8 +407,21 @@ export class Sidebar {
   private setCollapsed(collapsed: boolean): void {
     this.collapsed = collapsed;
     this.panel.classList.toggle("collapsed", collapsed);
-    this.fab.classList.toggle("visible", collapsed);
+    this.fab.classList.toggle("panel-open", !collapsed);
     this.fab.setAttribute("aria-expanded", collapsed ? "false" : "true");
+    this.fab.title = collapsed
+      ? "Open highlight threads"
+      : "Close highlight threads";
+    this.fab.setAttribute(
+      "aria-label",
+      collapsed ? "Open highlight threads" : "Close highlight threads"
+    );
+  }
+
+  private closeAllMenus(): void {
+    this.shadow
+      .querySelectorAll(".menu.open")
+      .forEach((el) => el.classList.remove("open"));
   }
 
   private renderShell(): void {
@@ -397,11 +432,12 @@ export class Sidebar {
 
     this.fab = document.createElement("button");
     this.fab.type = "button";
-    this.fab.className = "fab visible";
+    this.fab.className = "fab";
     this.fab.title = "Open highlight threads";
     this.fab.setAttribute("aria-label", "Open highlight threads");
+    this.fab.setAttribute("aria-expanded", "false");
     this.fab.textContent = "Threads";
-    this.fab.addEventListener("click", () => this.setCollapsed(false));
+    this.fab.addEventListener("click", () => this.setCollapsed(!this.collapsed));
     this.shadow.appendChild(this.fab);
 
     this.panel = document.createElement("div");
@@ -411,7 +447,6 @@ export class Sidebar {
       `
       <div class="header">
         <span>Highlight threads</span>
-        <button type="button" class="collapse-btn" title="Collapse" aria-label="Collapse">›</button>
       </div>
       <div class="list"></div>
     `
@@ -419,8 +454,9 @@ export class Sidebar {
     this.shadow.appendChild(this.panel);
     this.listEl = this.panel.querySelector(".list") as HTMLElement;
 
-    this.panel.querySelector(".collapse-btn")?.addEventListener("click", () => {
-      this.setCollapsed(true);
+    this.shadow.addEventListener("click", (event) => {
+      const target = event.target as Element | null;
+      if (!target?.closest(".menu")) this.closeAllMenus();
     });
   }
 
@@ -472,31 +508,57 @@ export class Sidebar {
       main,
       `
       <div class="quote">${escapeHtml(thread.quotedText)}</div>
-      <div class="meta">${thread.replies.length} ${
-        thread.replies.length === 1 ? "reply" : "replies"
-      }</div>
     `
     );
     main.addEventListener("click", () => this.toggleThread(thread.id));
 
-    const collapseBtn = document.createElement("button");
-    collapseBtn.type = "button";
-    collapseBtn.className = "close-btn";
-    const isExpanded = this.expanded.has(thread.id);
-    collapseBtn.title = isExpanded ? "Collapse thread" : "Expand thread";
-    collapseBtn.setAttribute(
-      "aria-label",
-      isExpanded ? "Collapse thread" : "Expand thread"
-    );
-    collapseBtn.textContent = isExpanded ? "▾" : "▸";
-    collapseBtn.addEventListener("click", (e) => {
+    const menu = document.createElement("div");
+    menu.className = "menu";
+    const menuBtn = document.createElement("button");
+    menuBtn.type = "button";
+    menuBtn.className = "menu-btn";
+    menuBtn.title = "Thread options";
+    menuBtn.setAttribute("aria-label", "Thread options");
+    menuBtn.setAttribute("aria-haspopup", "true");
+    menuBtn.setAttribute("aria-expanded", "false");
+    menuBtn.textContent = "⋯";
+    menuBtn.addEventListener("click", (e) => {
       e.preventDefault();
       e.stopPropagation();
-      this.toggleThread(thread.id);
+      const wasOpen = menu.classList.contains("open");
+      this.closeAllMenus();
+      if (!wasOpen) {
+        menu.classList.add("open");
+        menuBtn.setAttribute("aria-expanded", "true");
+      }
     });
 
+    const dropdown = document.createElement("div");
+    dropdown.className = "menu-dropdown";
+    dropdown.setAttribute("role", "menu");
+    const deleteBtn = document.createElement("button");
+    deleteBtn.type = "button";
+    deleteBtn.className = "menu-item";
+    deleteBtn.setAttribute("role", "menuitem");
+    deleteBtn.textContent = "Delete thread";
+    deleteBtn.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      this.closeAllMenus();
+      this.expanded.delete(thread.id);
+      this.drafts.delete(thread.id);
+      this.errors.delete(thread.id);
+      this.partials.delete(thread.id);
+      this.sending.delete(thread.id);
+      if (this.activeId === thread.id) this.activeId = null;
+      void this.callbacks.onDeleteThread(thread.id);
+    });
+    dropdown.appendChild(deleteBtn);
+    menu.appendChild(menuBtn);
+    menu.appendChild(dropdown);
+
     header.appendChild(main);
-    header.appendChild(collapseBtn);
+    header.appendChild(menu);
     card.appendChild(header);
 
     const body = document.createElement("div");
@@ -555,7 +617,8 @@ export class Sidebar {
       if (!question || this.sending.has(thread.id)) return;
       this.sending.add(thread.id);
       this.errors.delete(thread.id);
-      this.drafts.set(thread.id, question);
+      // Clear the composer while waiting so the draft isn't stuck on screen.
+      this.drafts.delete(thread.id);
       this.renderList();
       const patch = rafThrottle((partial: string) =>
         this.patchAssistantReply(thread.id, partial)
@@ -564,14 +627,15 @@ export class Sidebar {
         const result = await this.callbacks.onSend(thread, question, patch);
         if (!result.ok) {
           this.errors.set(thread.id, result.error || "Request failed");
-        } else {
-          this.drafts.delete(thread.id);
+          // Restore the draft so a failed send isn't lost.
+          this.drafts.set(thread.id, question);
         }
       } catch (err) {
         this.errors.set(
           thread.id,
           err instanceof Error ? err.message : String(err)
         );
+        this.drafts.set(thread.id, question);
       } finally {
         patch.cancel();
         this.sending.delete(thread.id);
