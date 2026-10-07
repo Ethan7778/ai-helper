@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Privacy Policy — AI Helper</title>
+    <title>Privacy Policy — AI Helper — Highlight to Thread</title>
     <style>
       :root {
         color-scheme: light;
@@ -15,12 +15,12 @@
       body {
         margin: 0;
         font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
-        line-height: 1.55;
+        line-height: 1.6;
         color: var(--ink);
         background: var(--bg);
       }
       main {
-        max-width: 40rem;
+        max-width: 44rem;
         margin: 0 auto;
         padding: 2.5rem 1.25rem 4rem;
       }
@@ -34,23 +34,36 @@
         margin-bottom: 2rem;
       }
       h2 {
-        font-size: 1.15rem;
-        margin: 1.75rem 0 0.5rem;
+        font-size: 1.2rem;
+        margin: 2rem 0 0.5rem;
+        padding-top: 1rem;
+        border-top: 1px solid var(--line);
       }
-      p,
-      li {
-        color: var(--ink);
+      h3 {
+        font-size: 1rem;
+        margin: 1.25rem 0 0.35rem;
       }
       ul {
         padding-left: 1.2rem;
       }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 0.95rem;
+        margin: 0.75rem 0;
+      }
+      th,
+      td {
+        text-align: left;
+        vertical-align: top;
+        padding: 0.5rem;
+        border: 1px solid var(--line);
+      }
+      th {
+        background: #f0f0f0;
+      }
       a {
         color: inherit;
-      }
-      hr {
-        border: none;
-        border-top: 1px solid var(--line);
-        margin: 2rem 0;
       }
     </style>
   </head>
@@ -58,108 +71,274 @@
     <main>
       <h1>Privacy Policy</h1>
       <p class="meta">
-        AI Helper — Highlight to Thread<br />
-        Last updated: October 2, 2026
+        AI Helper — Highlight to Thread (Chrome extension)<br />
+        Effective date: October 7, 2026
       </p>
 
       <p>
-        This privacy policy describes how the
-        <strong>AI Helper — Highlight to Thread</strong> Chrome extension
-        (“the Extension”) handles information.
+        This policy explains what user data the AI Helper — Highlight to Thread
+        Chrome extension (“the Extension”, “we”) collects, how it is used and
+        handled, where it is stored, who it is shared with, how long it is kept,
+        and how you can delete it.
       </p>
 
-      <h2>Summary</h2>
+      <h2>1. Summary</h2>
       <ul>
-        <li>The Extension does <strong>not</strong> have its own backend server.</li>
-        <li>It does <strong>not</strong> sell your data or show ads.</li>
         <li>
-          Follow-up questions are answered through
-          <strong>your existing logged-in session</strong> on ChatGPT, Claude, or
-          Gemini — the same way those sites normally work in your browser.
+          The Extension collects the text you highlight, the questions you type in
+          its sidebar, and the replies to those questions.
         </li>
         <li>
-          Thread history is stored locally in your browser with Chrome’s
-          <code>storage</code> API.
+          This data is stored <strong>only on your device</strong>, in Chrome’s
+          extension storage. We do not operate any server, and we never receive
+          your data.
+        </li>
+        <li>
+          When you send a question, it is shared <strong>only</strong> with the AI
+          chat site you are using (ChatGPT, Claude, or Gemini) so that site can
+          answer it.
+        </li>
+        <li>
+          We do not sell, rent, or trade user data. We do not use it for
+          advertising, analytics, profiling, or credit decisions.
         </li>
       </ul>
 
-      <h2>Information the Extension stores</h2>
+      <h2>2. Data we collect</h2>
       <p>
-        On your device, the Extension may store highlight threads for conversations
-        you use it on, including:
+        The Extension only runs on these three sites:
+        <a href="https://chatgpt.com">chatgpt.com</a>,
+        <a href="https://claude.ai">claude.ai</a>, and
+        <a href="https://gemini.google.com">gemini.google.com</a>. On those
+        sites it handles the following data:
       </p>
+      <table>
+        <thead>
+          <tr>
+            <th>Data</th>
+            <th>When it is collected</th>
+            <th>Why</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>
+              Highlighted text from an AI reply, and its position in that reply
+            </td>
+            <td>When you highlight text and click “Ask about this”</td>
+            <td>To start a thread and re-draw the highlight later</td>
+          </tr>
+          <tr>
+            <td>Questions you type in the sidebar</td>
+            <td>When you send a question</td>
+            <td>To get an answer and show it in the thread</td>
+          </tr>
+          <tr>
+            <td>Answers returned by the AI chat site</td>
+            <td>When the answer arrives</td>
+            <td>To show the thread history</td>
+          </tr>
+          <tr>
+            <td>
+              A short excerpt of the visible conversation around the highlight
+            </td>
+            <td>When you send a question</td>
+            <td>Sent with your question so the answer has context</td>
+          </tr>
+          <tr>
+            <td>
+              Technical identifiers: the chat page’s conversation ID, message
+              IDs, and the ID of the temporary side chat (for Claude, also your
+              organization ID)
+            </td>
+            <td>When a thread is created or answered</td>
+            <td>To attach threads to the right chat and continue side chats</td>
+          </tr>
+          <tr>
+            <td>
+              Session credentials the chat site already gave your browser (for
+              example, the ChatGPT access token or Gemini page tokens)
+            </td>
+            <td>Only while sending a question</td>
+            <td>
+              To send your question through your existing logged-in session.
+              These are used in memory for that request and are
+              <strong>never stored or sent anywhere else</strong>.
+            </td>
+          </tr>
+        </tbody>
+      </table>
+      <p>We do <strong>not</strong> collect:</p>
       <ul>
-        <li>quoted / highlighted text,</li>
-        <li>your follow-up questions and the assistant replies in that thread,</li>
+        <li>your name, email address, passwords, or payment information;</li>
+        <li>your browsing history, or any data from other websites;</li>
+        <li>your location, device identifiers, or analytics or usage tracking data.</li>
+      </ul>
+
+      <h2>3. How we use the data</h2>
+      <p>The data above is used only to provide the Extension’s single purpose:</p>
+      <ul>
+        <li>showing the “Ask about this” button and highlight marks;</li>
+        <li>sending your question to the chat site you are on and showing the answer;</li>
+        <li>saving your threads so they reappear when you return to that chat.</li>
+      </ul>
+      <p>It is not used for any other purpose.</p>
+
+      <h2>4. How the data is handled</h2>
+      <ul>
         <li>
-          technical IDs needed to continue a side chat (for example conversation
-          or message identifiers used by the host site).
+          All processing happens inside your browser, in the Extension’s code on
+          the chat page.
         </li>
+        <li>
+          Requests to ChatGPT, Claude, and Gemini are sent over encrypted HTTPS
+          (and, for ChatGPT, a secure WebSocket) directly from your browser to
+          that site.
+        </li>
+        <li>
+          There is no AI Helper server, so your data never passes through us.
+        </li>
+        <li>No humans at AI Helper can read your data.</li>
+        <li>The Extension does not load or run code from outside its package.</li>
       </ul>
-      <p>
-        This data stays in your browser profile via
-        <code>chrome.storage.local</code>. It is not uploaded to an AI Helper
-        server, because there isn’t one.
-      </p>
 
-      <h2>Information sent to third parties</h2>
-      <p>
-        When you send a follow-up from the sidebar, the Extension uses the page’s
-        normal network requests to the site you are on:
-      </p>
-      <ul>
-        <li><a href="https://chatgpt.com">chatgpt.com</a></li>
-        <li><a href="https://claude.ai">claude.ai</a></li>
-        <li><a href="https://gemini.google.com">gemini.google.com</a></li>
-      </ul>
-      <p>
-        Those requests include the highlighted snippet, surrounding context the
-        Extension gathers from the visible chat, and your question, so the host
-        site can generate a reply. How those companies handle that information is
-        governed by their own privacy policies and terms.
-      </p>
-      <p>
-        The Extension only requests access to those three sites (plus local
-        storage). It does not read your browsing history elsewhere.
-      </p>
-
-      <h2>Permissions</h2>
+      <h2>5. Where the data is stored</h2>
       <ul>
         <li>
-          <strong>storage</strong> — save and restore highlight threads on your
+          Threads (highlighted text, positions, questions, answers, and the
+          technical identifiers listed above) are stored locally with Chrome’s
+          <code>chrome.storage.local</code> API, in your Chrome profile on your
           device.
         </li>
         <li>
-          <strong>Host access</strong> to ChatGPT, Claude, and Gemini — inject the
-          highlight UI and send follow-ups through your logged-in session on those
-          pages.
+          This storage is not synced to your Google account and is not uploaded
+          to us.
+        </li>
+        <li>
+          If you turn on debug logging, an on/off flag is saved in the chat site’s
+          local storage. It contains no personal data.
+        </li>
+        <li>Session credentials are never stored.</li>
+      </ul>
+
+      <h2>6. Sharing and disclosure</h2>
+      <p>
+        When you send a question, the Extension shares the highlighted text, the
+        conversation excerpt, your question, and your earlier questions and
+        answers in that thread with the AI chat site you are using:
+      </p>
+      <ul>
+        <li>
+          OpenAI (chatgpt.com) —
+          <a href="https://openai.com/policies/privacy-policy/">OpenAI privacy policy</a>
+        </li>
+        <li>
+          Anthropic (claude.ai) —
+          <a href="https://www.anthropic.com/legal/privacy">Anthropic privacy policy</a>
+        </li>
+        <li>
+          Google (gemini.google.com) —
+          <a href="https://policies.google.com/privacy">Google privacy policy</a>
+        </li>
+      </ul>
+      <p>
+        This is the same kind of request those sites receive when you chat with
+        them directly. The answers come from them, and they handle that data
+        under their own privacy policies. The Extension asks them to use
+        temporary or incognito chats, so side threads do not appear in your
+        chat history there.
+      </p>
+      <p>
+        Other than this, we do not share, sell, rent, or transfer user data to
+        anyone. That includes advertisers, data brokers, and analytics
+        providers. We would only disclose data if required by law, and since we
+        never receive your data, we have none to disclose.
+      </p>
+
+      <h2>7. Data retention</h2>
+      <ul>
+        <li>
+          Threads stay on your device until you delete them, clear the
+          Extension’s data, or uninstall the Extension.
+        </li>
+        <li>Session credentials are discarded as soon as each request finishes.</li>
+        <li>
+          Data shared with OpenAI, Anthropic, or Google is kept according to their
+          policies. Temporary and incognito chats are typically deleted by those
+          services after a short period.
         </li>
       </ul>
 
-      <h2>Children</h2>
+      <h2>8. How to delete your data</h2>
+      <ul>
+        <li>
+          <strong>Uninstall the Extension</strong> at
+          <code>chrome://extensions</code>: Chrome permanently deletes everything
+          the Extension stored.
+        </li>
+        <li>
+          You can also email us (see Contact). Since we hold none of your data,
+          the only copy is in your browser, and uninstalling removes it.
+        </li>
+        <li>
+          For data held by ChatGPT, Claude, or Gemini, use the controls those
+          services provide.
+        </li>
+      </ul>
+
+      <h2>9. Security</h2>
       <p>
-        The Extension is not directed at children under 13, and we do not knowingly
-        collect personal information from children.
+        Data stays in Chrome’s sandboxed extension storage on your device.
+        Network requests go only to the three chat sites, over HTTPS. The
+        Extension asks for the minimum permissions it needs:
+        <code>storage</code>, plus access to chatgpt.com, claude.ai, and
+        gemini.google.com.
       </p>
 
-      <h2>Changes</h2>
+      <h2>10. Permissions and why they are needed</h2>
+      <ul>
+        <li><strong>storage</strong> — to save your threads on your device.</li>
+        <li>
+          <strong>Access to chatgpt.com, claude.ai, and gemini.google.com</strong>
+          — to show the highlight button and sidebar on those pages, and to send
+          your questions through your logged-in session there.
+        </li>
+      </ul>
+
+      <h2>11. Limited Use disclosure</h2>
       <p>
-        If this policy changes, the “Last updated” date above will be revised.
-        Continued use of the Extension after a change means you accept the updated
-        policy.
+        The use of information received by the Extension follows the
+        <a href="https://developer.chrome.com/docs/webstore/program-policies/limited-use"
+          >Chrome Web Store User Data Policy</a
+        >, including the Limited Use requirements. Data is used only to provide
+        the Extension’s single, user-facing feature. It is never transferred to
+        third parties except the chat site you choose to send a question to. It
+        is never used for advertising, and it is never read by humans.
       </p>
 
-      <h2>Contact</h2>
+      <h2>12. Children</h2>
       <p>
-        Questions about this policy: open an issue on the project repository at
-        <a href="https://github.com/Ethan7778/ai-helper"
-          >github.com/Ethan7778/ai-helper</a
-        >.
+        The Extension is not directed at children under 13, and we do not
+        knowingly collect personal information from children.
       </p>
 
-      <hr />
-      <p class="meta">
-        This page is intended for the Chrome Web Store privacy-policy requirement.
+      <h2>13. Changes to this policy</h2>
+      <p>
+        If this policy changes, we will update the effective date at the top of
+        this page. Big changes will also be noted in the Extension’s release
+        notes.
+      </p>
+
+      <h2>14. Contact</h2>
+      <p>
+        Questions or requests about this policy:<br />
+        Email:
+        <a href="mailto:ethanjohnastle@gmail.com">ethanjohnastle@gmail.com</a
+        ><br />
+        GitHub:
+        <a href="https://github.com/Ethan7778/ai-helper/issues"
+          >github.com/Ethan7778/ai-helper/issues</a
+        >
       </p>
     </main>
   </body>
