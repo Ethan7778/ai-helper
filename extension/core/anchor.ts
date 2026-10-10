@@ -780,6 +780,20 @@ export function attachSelectionHandler(
 
   const captureStickyNative = (): SelectionAnchor | null => {
     const current = getSelectionAnchor(getMessageRoots(), findRootForNode);
+
+    // While the user is actively dragging, follow the CURRENT highlight.
+    // This lets the button move forward and backward with the mouse.
+    if (pointerSelecting) {
+      if (current) {
+        bestDragAnchor = current;
+        show(current);
+        return current;
+      }
+      return bestDragAnchor;
+    }
+
+    // After release, keep the longest valid selection so ChatGPT's
+    // own selection UI cannot shrink the quote.
     const best = rememberLongestNative(current);
     if (best) show(best);
     return best;
@@ -789,8 +803,13 @@ export function attachSelectionHandler(
     const anchor = getSelectionAnchor(getMessageRoots(), findRootForNode);
     if (anchor) {
       if (pointerSelecting) {
-        rememberLongestNative(anchor);
-        show(stickyNative ? bestDragAnchor ?? anchor : anchor);
+        if (stickyNative) {
+          bestDragAnchor = anchor;
+        } else {
+          rememberLongestNative(anchor);
+        }
+
+        show(anchor);
         return;
       }
       // Immediately after pointer release, ChatGPT may swap the real range
