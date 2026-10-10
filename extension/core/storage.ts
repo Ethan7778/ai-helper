@@ -119,12 +119,20 @@ export async function migrateThreads(
     loadThreads(siteId, fromConversationId),
     loadThreads(siteId, toConversationId),
   ]);
-  const moving = from.filter((t) => presentMessageIds.has(t.messageId));
-  if (moving.length === 0) return to;
+  // Skip empty drafts — those are in-memory only until the user sends.
+  const withReplies = (list: Thread[]) =>
+    list.filter((t) => t.replies.length > 0);
+  const moving = withReplies(from).filter((t) =>
+    presentMessageIds.has(t.messageId)
+  );
+  const toPersisted = withReplies(to);
+  if (moving.length === 0) return toPersisted;
 
-  const known = new Set(to.map((t) => t.id));
-  const merged = [...to, ...moving.filter((t) => !known.has(t.id))];
-  const remaining = from.filter((t) => !presentMessageIds.has(t.messageId));
+  const known = new Set(toPersisted.map((t) => t.id));
+  const merged = [...toPersisted, ...moving.filter((t) => !known.has(t.id))];
+  const remaining = withReplies(from).filter(
+    (t) => !presentMessageIds.has(t.messageId)
+  );
 
   await saveThreads(siteId, toConversationId, merged);
   if (remaining.length) {

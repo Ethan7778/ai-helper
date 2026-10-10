@@ -643,6 +643,9 @@ export class Sidebar {
   }
 
   focusThread(threadId: string): void {
+    if (this.openId && this.openId !== threadId) {
+      this.discardOpenDraftIfEmpty();
+    }
     if (this.openId !== threadId) this.openQuote = false;
     this.openId = threadId;
     this.activeId = threadId;
@@ -652,6 +655,9 @@ export class Sidebar {
   }
 
   private openThread(threadId: string): void {
+    if (this.openId && this.openId !== threadId) {
+      this.discardOpenDraftIfEmpty();
+    }
     this.openQuote = false;
     this.openId = threadId;
     this.activeId = threadId;
@@ -661,8 +667,28 @@ export class Sidebar {
   }
 
   private showList(): void {
+    this.discardOpenDraftIfEmpty();
     this.openId = null;
     this.render();
+  }
+
+  /**
+   * Unsent highlight drafts are never persisted. Drop them as soon as the
+   * user leaves the composer (back, close panel, open another thread).
+   */
+  private discardOpenDraftIfEmpty(): void {
+    const id = this.openId;
+    if (!id || this.sending.has(id)) return;
+    const thread = this.threads.find((t) => t.id === id);
+    if (!thread || thread.replies.length > 0) return;
+
+    this.drafts.delete(id);
+    this.errors.delete(id);
+    this.partials.delete(id);
+    this.sendStarted.delete(id);
+    if (this.activeId === id) this.activeId = null;
+    this.openId = null;
+    void this.callbacks.onDeleteThread(id);
   }
 
   private composerFor(threadId: string): HTMLTextAreaElement | null {
@@ -703,6 +729,7 @@ export class Sidebar {
   }
 
   private setCollapsed(collapsed: boolean): void {
+    if (collapsed) this.discardOpenDraftIfEmpty();
     this.collapsed = collapsed;
     this.panel.classList.toggle("collapsed", collapsed);
     this.fab.setAttribute("aria-expanded", collapsed ? "false" : "true");

@@ -38,7 +38,11 @@ function createId(): string {
  */
 export async function bootEngine(adapter: SiteAdapter): Promise<() => void> {
   let conversationId = adapter.getConversationId();
-  let threads: Thread[] = await loadThreads(adapter.siteId, conversationId);
+  /** Only threads with at least one sent message are written to storage. */
+  const withReplies = (list: Thread[]): Thread[] =>
+    list.filter((t) => t.replies.length > 0);
+  const loadedAtBoot = await loadThreads(adapter.siteId, conversationId);
+  let threads: Thread[] = withReplies(loadedAtBoot);
   const messageEls = new Map<string, HTMLElement>();
   /** Messages still streaming; highlights are applied once they complete. */
   const pendingReady = new Map<HTMLElement, { messageId: string; since: number }>();
@@ -61,12 +65,23 @@ export async function bootEngine(adapter: SiteAdapter): Promise<() => void> {
       throw new Error(EXTENSION_RELOAD_MSG);
     }
     try {
-      await saveThreads(adapter.siteId, conversationId, threads);
+      // Draft highlights (no replies yet) stay in memory only.
+      await saveThreads(adapter.siteId, conversationId, withReplies(threads));
     } catch (err) {
       markDead(err);
       throw err instanceof Error ? err : new Error(String(err));
     }
   };
+
+  // Drop empty threads saved by older builds that persisted on highlight.
+  if (threads.length !== loadedAtBoot.length) {
+    void persist().catch((err) => {
+      log.warn(
+        "could not prune empty threads:",
+        err instanceof Error ? err.message : err
+      );
+    });
+  }
 
   const surroundingContext = (thread: Thread): string => {
     const el = messageEls.get(thread.messageId);
@@ -132,23 +147,25 @@ export async function bootEngine(adapter: SiteAdapter): Promise<() => void> {
         markDead();
         return;
       }
-      const next = threads.filter((t) => t.id !== threadId);
-      if (next.length === threads.length) return;
       const previous = threads;
-      threads = next;
+      const removed = previous.find((t) => t.id === threadId);
+      if (!removed) return;
+      threads = previous.filter((t) => t.id !== threadId);
+      sidebar.setThreads(threads);
+      refreshHighlights();
+      // Unsent drafts were never written to storage — nothing to update.
+      if (removed.replies.length === 0) return;
       try {
         await persist();
       } catch (err) {
         threads = previous;
         sidebar.setThreads(threads);
+        refreshHighlights();
         log.warn(
           "could not delete thread:",
           err instanceof Error ? err.message : err
         );
-        return;
       }
-      sidebar.setThreads(threads);
-      refreshHighlights();
     },
     onSend: async (thread, question, onPartial) => {
       if (!isExtensionAlive()) {
@@ -289,17 +306,8 @@ export async function bootEngine(adapter: SiteAdapter): Promise<() => void> {
       quotedText: anchor.quotedText,
       replies: [],
     };
+    // Keep the draft in memory + UI only; persist happens on first send.
     threads = [...threads, thread];
-    try {
-      await persist();
-    } catch (err) {
-      threads = threads.filter((t) => t.id !== thread.id);
-      log.warn(
-        "could not save new thread:",
-        err instanceof Error ? err.message : err
-      );
-      return;
-    }
     sidebar.setThreads(threads);
     sidebar.focusThread(thread.id);
     refreshHighlights();
@@ -320,19 +328,22 @@ export async function bootEngine(adapter: SiteAdapter): Promise<() => void> {
   const onConversationChange = async (next: string) => {
     log.debug(`Conversation changed: "${conversationId}" -> "${next}"`);
     const previous = conversationId;
+    const drafts = threads.filter((t) => t.replies.length === 0);
     conversationId = next;
     const token = ++loadToken;
+    const presentMessageIds = new Set(
+      adapter.getMessageContainers().map((el) => adapter.getMessageId(el))
+    );
     // A brand-new chat starts on "/" and gets its /c/<id> URL mid-reply; carry
     // over highlights made before that, but only for messages still on screen.
+    const anonToReal = previous.startsWith("anon-") && !next.startsWith("anon-");
     const loaded =
-      previous.startsWith("anon-") && !next.startsWith("anon-")
+      anonToReal
         ? await migrateThreads(
             adapter.siteId,
             previous,
             next,
-            new Set(
-              adapter.getMessageContainers().map((el) => adapter.getMessageId(el))
-            )
+            presentMessageIds
           ).catch((err) => {
             log.warn(
               "Could not move new-chat highlights:",
@@ -342,7 +353,18 @@ export async function bootEngine(adapter: SiteAdapter): Promise<() => void> {
           })
         : await loadThreads(adapter.siteId, next);
     if (token !== loadToken || dead) return;
-    threads = loaded;
+    const persisted = withReplies(loaded);
+    // Unsent drafts aren't in storage; keep them across the anon→real URL
+    // handoff when their message is still on screen. Drop them on any other
+    // conversation switch.
+    const keepDrafts = anonToReal
+      ? drafts.filter((t) => presentMessageIds.has(t.messageId))
+      : [];
+    const known = new Set(persisted.map((t) => t.id));
+    threads = [
+      ...persisted,
+      ...keepDrafts.filter((t) => !known.has(t.id)),
+    ];
     messageEls.clear();
     pendingReady.clear();
     sidebar.setThreads(threads);
