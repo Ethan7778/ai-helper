@@ -230,6 +230,7 @@ export async function completeViaGeminiSession(
       surroundingContext: req.surroundingContext,
       conversationExcerpt: req.conversationExcerpt,
       question: req.question,
+      answerLength: req.answerLength,
       siteName: "Gemini",
     };
 

@@ -798,6 +798,7 @@ export async function completeViaChatGptSession(
       surroundingContext: req.surroundingContext,
       conversationExcerpt: req.conversationExcerpt,
       question: req.question,
+      answerLength: req.answerLength,
     });
 
     const sentinel = await fetchSentinelTokens(

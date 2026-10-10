@@ -4,8 +4,9 @@ import type {
   HighlightStyle,
   Thread,
   UiAppearance,
+  AnswerLength,
 } from "./types";
-import { DEFAULT_UI_APPEARANCE } from "./types";
+import { DEFAULT_UI_APPEARANCE, DEFAULT_ANSWER_LENGTH, normalizeAnswerLength } from "./types";
 import { formatReplyHtml } from "./text-clean";
 import { fetchAccessTokenFromPage } from "./chatgpt-auth";
 import { completeViaChatGptSession } from "../background/chatgpt-session";
@@ -44,7 +45,13 @@ const HIGHLIGHT_COLOR_PRESETS = [
   "#f97316",
 ] as const;
 
-const GEAR_ICON = `<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 1v2.5M12 20.5V23M4.22 4.22l1.77 1.77M18.01 18.01l1.77 1.77M1 12h2.5M20.5 12H23M4.22 19.78l1.77-1.77M18.01 5.99l1.77-1.77"/></svg>`;
+const GEAR_ICON = `<svg viewBox="0 0 24 24" width="19" height="19" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 3h5l.6 2.6 1.3.8 2.6-.8 2.5 4.3-2 1.8v1.6l2 1.8-2.5 4.3-2.6-.8-1.3.8-.6 2.6h-5l-.6-2.6-1.3-.8-2.6.8L2.5 15l2-1.8v-1.6l-2-1.8L5 5.5l2.6.8 1.3-.8Z"/><circle cx="12" cy="12.3" r="3.1"/></svg>`;
+
+const ANSWER_LENGTH_OPTIONS: { value: AnswerLength; label: string; description: string }[] = [
+  { value: "short", label: "Short", description: "Clear and specific. Just the answer and essential steps." },
+  { value: "medium", label: "Medium", description: "A balanced explanation with key steps and a useful example." },
+  { value: "detailed", label: "Detailed", description: "More depth, step-by-step reasoning, and helpful examples." },
+];
 
 export interface SidebarCallbacks {
   onFocusThread: (threadId: string) => void;
@@ -55,6 +62,7 @@ export interface SidebarCallbacks {
     onPartial?: (text: string) => void
   ) => Promise<{ ok: boolean; reply?: string; error?: string }>;
   onAppearanceChange: (appearance: UiAppearance) => void | Promise<void>;
+  onAnswerLengthChange: (length: AnswerLength) => void | Promise<void>;
 }
 
 export interface SidebarOptions {
@@ -606,6 +614,36 @@ const STYLES = `
 .settings-section {
   margin-bottom: 18px;
 }
+.settings-heading {
+  font-size: 14px;
+  font-weight: 650;
+  color: var(--text);
+  margin: 0 0 14px;
+}
+.settings-divider {
+  height: 1px;
+  background: var(--border);
+  margin: 22px 0;
+}
+.settings-hint.answer-description {
+  min-height: 36px;
+  margin: 10px 0 6px;
+  color: var(--text-secondary);
+}
+.settings-hint.answer-status {
+  min-height: 18px;
+  margin: 0;
+}
+.answer-status.error { color: var(--danger); }
+.style-btn:disabled { opacity: 0.65; cursor: default; }
+.style-btn:not(.active):not(:disabled):hover {
+  border-color: var(--border-strong);
+  background: var(--bg-hover);
+}
+.style-btn:focus-visible, .icon-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
 .settings-label {
   display: block;
   font-weight: 600;
@@ -722,8 +760,11 @@ export class Sidebar {
   private partials = new Map<string, string>();
   private openQuote = false;
   private activeId: string | null = null;
-  /** Settings screen open from the thread list header. */
+  /** Settings screen can be opened from the list or current thread. */
   private settingsOpen = false;
+  private answerLength: AnswerLength = DEFAULT_ANSWER_LENGTH;
+  private answerLengthSaving = false;
+  private answerLengthError = "";
   private appearance: UiAppearance = { ...DEFAULT_UI_APPEARANCE };
   /** Start collapsed so we don't cover the site's chrome until needed. */
   private collapsed = true;
@@ -792,6 +833,7 @@ export class Sidebar {
       view: this.settingsOpen ? "settings" : this.openId ? "thread" : "list",
       preferredWidth: this.preferredWidth,
       appearance: this.appearance,
+      answerLength: this.answerLength,
       hostParent: this.host.parentElement?.tagName.toLowerCase() ?? null,
       panelRect: this.panel.getBoundingClientRect().toJSON(),
       ...this.dock.describe(),
@@ -801,6 +843,11 @@ export class Sidebar {
   setAppearance(appearance: UiAppearance): void {
     this.appearance = { ...appearance };
     this.applyAppearanceVars();
+    if (this.settingsOpen) this.render();
+  }
+
+  setAnswerLength(length: AnswerLength): void {
+    this.answerLength = normalizeAnswerLength(length);
     if (this.settingsOpen) this.render();
   }
 
@@ -857,11 +904,48 @@ export class Sidebar {
   }
 
   private openSettings(): void {
-    this.discardOpenDraftIfEmpty();
-    this.openId = null;
     this.settingsOpen = true;
     this.setCollapsed(false);
     this.render();
+  }
+
+  private closeSettings(): void {
+    this.settingsOpen = false;
+    this.render();
+    if (this.openId) this.composerFor(this.openId)?.focus({ preventScroll: true });
+  }
+
+  private async updateAnswerLength(length: AnswerLength): Promise<void> {
+    if (this.answerLengthSaving || length === this.answerLength) return;
+    const previous = this.answerLength;
+    this.answerLength = length;
+    this.answerLengthSaving = true;
+    this.answerLengthError = "";
+    this.render();
+    try {
+      await this.callbacks.onAnswerLengthChange(length);
+    } catch (err) {
+      this.answerLength = previous;
+      this.answerLengthError = "Could not save. Please try again.";
+      log.warn("could not save answer length:", err);
+    } finally {
+      this.answerLengthSaving = false;
+      this.render();
+      if (this.settingsOpen) {
+        this.viewEl.querySelector<HTMLButtonElement>(`[data-answer-length="${length}"]`)?.focus({ preventScroll: true });
+      }
+    }
+  }
+
+  private buildSettingsButton(): HTMLButtonElement {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "icon-btn";
+    button.title = "Settings";
+    button.setAttribute("aria-label", "Settings");
+    setHtml(button, GEAR_ICON);
+    button.addEventListener("click", () => this.openSettings());
+    return button;
   }
 
   private updateAppearance(partial: Partial<UiAppearance>): void {
@@ -1108,14 +1192,7 @@ export class Sidebar {
       count.textContent = String(this.threads.length);
       header.appendChild(count);
     }
-    const settingsBtn = document.createElement("button");
-    settingsBtn.type = "button";
-    settingsBtn.className = "icon-btn";
-    settingsBtn.title = "Appearance settings";
-    settingsBtn.setAttribute("aria-label", "Appearance settings");
-    setHtml(settingsBtn, GEAR_ICON);
-    settingsBtn.addEventListener("click", () => this.openSettings());
-    header.appendChild(settingsBtn);
+    header.appendChild(this.buildSettingsButton());
     view.appendChild(header);
 
     const list = document.createElement("div");
@@ -1143,19 +1220,63 @@ export class Sidebar {
     const back = document.createElement("button");
     back.type = "button";
     back.className = "icon-btn";
-    back.title = "Back to threads";
-    back.setAttribute("aria-label", "Back to threads");
+    back.title = this.openId ? "Back to thread" : "Back to threads";
+    back.setAttribute("aria-label", back.title);
     setHtml(back, BACK_ICON);
-    back.addEventListener("click", () => this.showList());
+    back.addEventListener("click", () => this.closeSettings());
     const title = document.createElement("span");
     title.className = "title";
-    title.textContent = "Appearance";
+    title.textContent = "Settings";
     header.appendChild(back);
     header.appendChild(title);
     view.appendChild(header);
 
     const body = document.createElement("div");
     body.className = "settings";
+
+    const answers = document.createElement("section");
+    answers.className = "settings-section";
+    setHtml(answers,
+      `<h2 class="settings-heading">Answers</h2>
+       <div class="settings-label" id="answer-length-label">Answer length</div>
+       <p class="settings-hint">Choose how much detail you want in sidebar replies.</p>`);
+    const lengths = document.createElement("div");
+    lengths.className = "style-toggle";
+    lengths.setAttribute("role", "group");
+    lengths.setAttribute("aria-labelledby", "answer-length-label");
+    for (const option of ANSWER_LENGTH_OPTIONS) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "style-btn";
+      button.dataset.answerLength = option.value;
+      button.textContent = option.label;
+      button.title = option.description;
+      button.setAttribute("aria-pressed", String(option.value === this.answerLength));
+      button.setAttribute("aria-describedby", "answer-length-description");
+      button.disabled = this.answerLengthSaving;
+      if (option.value === this.answerLength) button.classList.add("active");
+      button.addEventListener("click", () => void this.updateAnswerLength(option.value));
+      lengths.appendChild(button);
+    }
+    answers.appendChild(lengths);
+    const description = document.createElement("p");
+    description.id = "answer-length-description";
+    description.className = "settings-hint answer-description";
+    description.textContent = ANSWER_LENGTH_OPTIONS.find(option => option.value === this.answerLength)!.description;
+    answers.appendChild(description);
+    const status = document.createElement("p");
+    status.className = `settings-hint answer-status${this.answerLengthError ? " error" : ""}`;
+    status.setAttribute("role", "status");
+    status.textContent = this.answerLengthError || (this.answerLengthSaving ? "Saving…" : "Applies to your next reply. Saved automatically.");
+    answers.appendChild(status);
+    body.appendChild(answers);
+    const divider = document.createElement("div");
+    divider.className = "settings-divider";
+    body.appendChild(divider);
+    const appearanceHeading = document.createElement("h2");
+    appearanceHeading.className = "settings-heading";
+    appearanceHeading.textContent = "Appearance";
+    body.appendChild(appearanceHeading);
 
     const colorSection = document.createElement("div");
     colorSection.className = "settings-section";
@@ -1360,6 +1481,7 @@ export class Sidebar {
     header.appendChild(back);
     header.appendChild(title);
     header.appendChild(this.buildMenu(thread));
+    header.appendChild(this.buildSettingsButton());
     view.appendChild(header);
 
     const quote = document.createElement("div");

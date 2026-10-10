@@ -1,6 +1,16 @@
 /** How highlight marks are drawn on the host page. */
 export type HighlightStyle = "classic" | "underline";
 
+/** Preferred amount of detail for new sidebar answers. */
+export type AnswerLength = "short" | "medium" | "detailed";
+export const DEFAULT_ANSWER_LENGTH: AnswerLength = "medium";
+
+export function normalizeAnswerLength(raw: unknown): AnswerLength {
+  return raw === "short" || raw === "medium" || raw === "detailed"
+    ? raw
+    : DEFAULT_ANSWER_LENGTH;
+}
+
 /** User-tunable sidebar / highlight appearance (persisted in extension storage). */
 export interface UiAppearance {
   /** CSS hex color for highlight marks and sidebar accents, e.g. `#c9a227`. */
@@ -73,6 +83,7 @@ export interface AskFollowUpRequest {
   surroundingContext: string;
   conversationExcerpt: string;
   question: string;
+  answerLength?: AnswerLength;
   messageId: string;
   threadId: string;
   sideConversationId?: string;
