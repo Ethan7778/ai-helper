@@ -680,8 +680,10 @@ const STYLES = `
 }
 .preview-mark.underline {
   background: transparent;
-  border-bottom: 2.5px solid var(--accent);
-  padding-bottom: 1px;
+  text-decoration: underline;
+  text-decoration-color: var(--accent);
+  text-decoration-thickness: 2px;
+  text-underline-offset: 2px;
 }
 @media (prefers-reduced-motion: reduce) {
   .panel, .fab, .resizer::after { transition: none; }

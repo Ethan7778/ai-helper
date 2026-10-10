@@ -26,17 +26,21 @@ export function styleHighlightMark(
   mark.style.cursor = "pointer";
   mark.style.borderRadius = "2px";
   mark.style.color = "inherit";
+  mark.style.display = "inline";
+  mark.style.borderBottom = "none";
+  mark.style.paddingBottom = "";
+  mark.style.boxShadow = "none";
   if (appearance.highlightStyle === "underline") {
+    // text-decoration follows the glyphs. border-bottom follows the box, and
+    // Claude's column layout stretches a mark between paragraphs to full width.
     mark.style.background = "transparent";
-    mark.style.boxShadow = "none";
-    mark.style.borderBottom = `2.5px solid ${appearance.highlightColor}`;
-    mark.style.paddingBottom = "1px";
-    mark.style.textDecoration = "none";
+    mark.style.textDecorationLine = "underline";
+    mark.style.textDecorationColor = appearance.highlightColor;
+    mark.style.textDecorationThickness = "2px";
+    mark.style.textUnderlineOffset = "2px";
+    mark.style.textDecorationSkipInk = "none";
   } else {
     mark.style.background = hexToRgba(appearance.highlightColor, 0.45);
-    mark.style.boxShadow = "none";
-    mark.style.borderBottom = "none";
-    mark.style.paddingBottom = "";
     mark.style.textDecoration = "none";
   }
 }
@@ -235,6 +239,51 @@ export interface SelectionAnchor {
 
 /** Site hook: message root containing a node, when it isn't in the known roots. */
 export type RootForNode = (node: Node) => HTMLElement | null;
+
+/**
+ * Find `quotedText` in a message, preferring the stored offset when the
+ * host has rewritten the DOM and the old range no longer matches.
+ */
+export function locateQuotedText(
+  root: HTMLElement,
+  quotedText: string,
+  preferStart?: number
+): { start: number; end: number } | null {
+  const wanted = normalizeWhitespaceWithMap(quotedText).text.trim();
+  if (!wanted) return null;
+
+  const raw = getPlainText(root);
+  if (!raw) return null;
+
+  if (
+    preferStart != null &&
+    preferStart >= 0 &&
+    raw.slice(preferStart, preferStart + quotedText.length) === quotedText
+  ) {
+    return { start: preferStart, end: preferStart + quotedText.length };
+  }
+
+  const hits: { start: number; end: number }[] = [];
+  const mapped = normalizeWhitespaceWithMap(raw);
+  let from = 0;
+  while (from <= mapped.text.length - wanted.length) {
+    const at = mapped.text.indexOf(wanted, from);
+    if (at < 0) break;
+    const start = mapped.starts[at];
+    const end = mapped.ends[at + wanted.length - 1];
+    if (start != null && end != null && start < end) {
+      hits.push({ start, end });
+    }
+    from = at + 1;
+  }
+  if (hits.length === 0) return null;
+  if (hits.length === 1 || preferStart == null) return hits[0]!;
+  return hits.reduce((best, hit) =>
+    Math.abs(hit.start - preferStart) < Math.abs(best.start - preferStart)
+      ? hit
+      : best
+  );
+}
 
 /**
  * Try to recover a selection anchor by fuzzy-matching `quotedText` across
@@ -739,11 +788,16 @@ export function attachSelectionHandler(
     }
     const button = createAskButton(() => {
       if (!pending) return null;
-      if (pending.messageRoot.isConnected) return pending;
+      if (pending.messageRoot.isConnected) {
+        const live = getPlainText(pending.messageRoot);
+        const stillThere =
+          live.slice(pending.start, pending.end) === pending.quotedText ||
+          live.includes(pending.quotedText);
+        if (stillThere) return pending;
+      }
 
-      // ChatGPT occasionally replaces the rendered assistant turn between
-      // mouseup and the click on our pill. Recover the same quote in the new
-      // turn instead of silently doing nothing with a detached DOM node.
+      // ChatGPT often replaces the assistant turn between mouseup and the
+      // click on our pill. Recover the same quote instead of doing nothing.
       const recovered = recoverSelectionAnchor(
         getMessageRoots(),
         pending.quotedText,
@@ -1257,7 +1311,8 @@ function wrapTextNodePortion(
   const before = text.slice(0, from);
   const mid = text.slice(from, to);
   const after = text.slice(to);
-  if (!mid) return;
+  // Whitespace between blocks becomes a full-width flex item on Claude.
+  if (!mid.trim()) return;
 
   const mark = document.createElement("mark");
   mark.dataset.threadId = threadId;
@@ -1273,23 +1328,30 @@ function wrapTextNodePortion(
 
 /**
  * Apply highlight marks to a message element from stored thread offsets.
- * Preserves the host page's DOM structure (lists, headings, etc.).
+ * If ChatGPT rewrote the turn, offsets are relocated via the quoted text.
+ * Returns the threads as applied (anchors may have moved).
  */
 export function applyHighlightsToElement(
   el: HTMLElement,
   threads: Thread[],
   appearance: UiAppearance = DEFAULT_UI_APPEARANCE
-): void {
+): Thread[] {
   const relevant = threads.filter((t) => t.anchorEnd > t.anchorStart);
-
   const rawText = getPlainText(el);
-  if (!rawText) {
-    return;
-  }
+  if (!rawText) return relevant;
 
-  if (!el.dataset.aiHelperRaw) {
-    el.dataset.aiHelperRaw = rawText;
-  }
+  const resolved = relevant.map((thread) => {
+    const slice = rawText.slice(thread.anchorStart, thread.anchorEnd);
+    if (slice === thread.quotedText) return thread;
+    const found = locateQuotedText(el, thread.quotedText, thread.anchorStart);
+    if (!found) return thread;
+    if (found.start === thread.anchorStart && found.end === thread.anchorEnd) {
+      return thread;
+    }
+    return { ...thread, anchorStart: found.start, anchorEnd: found.end };
+  });
 
-  wrapHighlightsInPlace(el, relevant, appearance);
+  el.dataset.aiHelperRaw = rawText;
+  wrapHighlightsInPlace(el, resolved, appearance);
+  return resolved;
 }

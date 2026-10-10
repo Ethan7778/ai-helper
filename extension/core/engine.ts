@@ -2,6 +2,9 @@ import {
   applyHighlightsToElement,
   attachSelectionHandler,
   getPlainText,
+  locateQuotedText,
+  styleHighlightMark,
+  hexToRgba,
   type SelectionAnchor,
 } from "./anchor";
 import { registerDiagnostics } from "./diagnostics";
@@ -116,34 +119,125 @@ export async function bootEngine(adapter: SiteAdapter): Promise<() => void> {
     });
   };
 
-  const applyToMessage = (el: HTMLElement, messageId: string) => {
-    if (!el.dataset.aiHelperRaw) {
-      el.dataset.aiHelperRaw = getPlainText(el);
-    }
+  const applyToMessage = (el: HTMLElement, messageId: string): boolean => {
     const forMessage = threads.filter((t) => t.messageId === messageId);
-    applyHighlightsToElement(el, forMessage, appearance);
+    const resolved = applyHighlightsToElement(el, forMessage, appearance);
+    let changed = false;
+    for (const next of resolved) {
+      const i = threads.findIndex((t) => t.id === next.id);
+      if (i < 0) continue;
+      if (
+        threads[i].anchorStart !== next.anchorStart ||
+        threads[i].anchorEnd !== next.anchorEnd
+      ) {
+        threads[i] = { ...threads[i], ...next };
+        changed = true;
+      }
+    }
     bindMarkClicks(el);
+    return changed;
   };
 
   const refreshHighlights = () => {
     for (const [messageId, el] of messageEls) {
-      if (!adapter.isMessageComplete(el)) continue;
+      if (!el.isConnected || !adapter.isMessageComplete(el)) continue;
       applyToMessage(el, messageId);
     }
   };
 
+  const rematchOrphanThreads = (live: HTMLElement[]): boolean => {
+    let changed = false;
+    const liveById = new Map(
+      live.map((el) => [adapter.getMessageId(el), el] as const)
+    );
+
+    threads = threads.map((thread) => {
+      const current = liveById.get(thread.messageId);
+      if (current?.isConnected) return thread;
+
+      const hits: { el: HTMLElement; start: number; end: number }[] = [];
+      for (const el of live) {
+        const found = locateQuotedText(el, thread.quotedText, thread.anchorStart);
+        if (found) hits.push({ el, ...found });
+      }
+      if (hits.length !== 1) return thread;
+
+      const hit = hits[0]!;
+      const nextId = adapter.getMessageId(hit.el);
+      if (
+        nextId === thread.messageId &&
+        hit.start === thread.anchorStart &&
+        hit.end === thread.anchorEnd
+      ) {
+        return thread;
+      }
+      changed = true;
+      log.debug(
+        `Rematched thread ${thread.id} to message ${nextId} at ${hit.start}-${hit.end}`
+      );
+      return {
+        ...thread,
+        messageId: nextId,
+        anchorStart: hit.start,
+        anchorEnd: hit.end,
+      };
+    });
+    return changed;
+  };
+
+  const messageNeedsMarks = (el: HTMLElement, messageId: string): boolean => {
+    const forMessage = threads.filter(
+      (t) => t.messageId === messageId && t.anchorEnd > t.anchorStart
+    );
+    if (forMessage.length === 0) return false;
+    return forMessage.some(
+      (t) =>
+        !el.querySelector(`mark[data-thread-id="${CSS.escape(t.id)}"]`)
+    );
+  };
+
+  const pulseThreadMarks = (threadId: string) => {
+    const marks = document.querySelectorAll<HTMLElement>(
+      `mark[data-thread-id="${CSS.escape(threadId)}"]`
+    );
+    if (marks.length === 0) return;
+    marks[0]!.scrollIntoView({ behavior: "smooth", block: "center" });
+    for (const mark of marks) {
+      if (appearance.highlightStyle === "underline") {
+        mark.style.textDecorationThickness = "3.5px";
+      } else {
+        mark.style.background = hexToRgba(appearance.highlightColor, 0.7);
+      }
+    }
+    window.setTimeout(() => {
+      for (const mark of marks) {
+        if (!mark.isConnected) continue;
+        styleHighlightMark(mark, appearance);
+      }
+    }, 900);
+  };
+
   const sidebar = new Sidebar({
     onFocusThread: (threadId) => {
-      const mark = document.querySelector(
-        `mark[data-thread-id="${CSS.escape(threadId)}"]`
-      ) as HTMLElement | null;
-      if (mark) {
-        mark.scrollIntoView({ behavior: "smooth", block: "center" });
-        mark.style.outline = `2px solid ${appearance.highlightColor}`;
-        setTimeout(() => {
-          mark.style.outline = "";
-        }, 1200);
+      const thread = threads.find((t) => t.id === threadId);
+      if (thread) {
+        const el = messageEls.get(thread.messageId);
+        const hasMark = el?.querySelector(
+          `mark[data-thread-id="${CSS.escape(threadId)}"]`
+        );
+        if (!el?.isConnected || !hasMark) {
+          if (syncLiveMessages()) {
+            sidebar.setThreads(threads);
+            void persist().catch((err) => {
+              log.warn(
+                "could not save rematched threads:",
+                err instanceof Error ? err.message : err
+              );
+            });
+          }
+        }
       }
+      pulseThreadMarks(threadId);
     },
     onAppearanceChange: async (next) => {
       appearance = next;
@@ -270,6 +364,30 @@ export async function bootEngine(adapter: SiteAdapter): Promise<() => void> {
     }
   };
 
+  const syncLiveMessages = (): boolean => {
+    const live = adapter.getMessageContainers();
+    for (const [id, el] of [...messageEls]) {
+      if (!el.isConnected || !live.includes(el)) messageEls.delete(id);
+    }
+    let changed = rematchOrphanThreads(live);
+    for (const el of live) {
+      const messageId = adapter.getMessageId(el);
+      const prev = messageEls.get(messageId);
+      messageEls.set(messageId, el);
+      if (!adapter.isMessageComplete(el)) {
+        if (!pendingReady.has(el)) {
+          pendingReady.set(el, { messageId, since: Date.now() });
+        }
+        continue;
+      }
+      pendingReady.delete(el);
+      if (prev !== el || messageNeedsMarks(el, messageId)) {
+        if (applyToMessage(el, messageId)) changed = true;
+      }
+    }
+    return changed;
+  };
+
   const processPendingReady = () => {
     const now = Date.now();
     for (const [el, { messageId, since }] of pendingReady) {
@@ -304,13 +422,13 @@ export async function bootEngine(adapter: SiteAdapter): Promise<() => void> {
       );
     }
 
-    const overlapping = threads.some(
+    const overlapping = threads.find(
       (t) =>
         t.messageId === messageId &&
         !(anchor.end <= t.anchorStart || anchor.start >= t.anchorEnd)
     );
     if (overlapping) {
-      log.warn("Selection overlaps an existing highlight; create skipped.");
+      sidebar.focusThread(overlapping.id);
       return;
     }
 
@@ -402,6 +520,17 @@ export async function bootEngine(adapter: SiteAdapter): Promise<() => void> {
     const next = adapter.getConversationId();
     if (next !== conversationId) {
       void onConversationChange(next);
+    } else {
+      const changed = syncLiveMessages();
+      if (changed) {
+        sidebar.setThreads(threads);
+        void persist().catch((err) => {
+          log.warn(
+            "could not save rematched threads:",
+            err instanceof Error ? err.message : err
+          );
+        });
+      }
     }
     if (pendingReady.size) processPendingReady();
   }, TICK_MS);
