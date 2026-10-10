@@ -1,8 +1,6 @@
 import type { SiteAdapter } from "../core/types";
 import { createDomAdapter } from "./dom-adapter";
 
-const MODERN_ASSISTANT_SELECTOR =
-  '[data-markdown-text-style="assistant-message"]';
 const MODERN_USER_SELECTORS = [
   '[data-content-search-unit-key$=":user"]',
   '[data-chatgpt-search-unit-key$=":user"]',
@@ -36,33 +34,41 @@ function roleFor(el: HTMLElement): "user" | "assistant" | null {
 export function createChatGptAdapter(): SiteAdapter {
   return createDomAdapter({
     siteId: "chatgpt",
-    // ChatGPT's selected-text overlay can replace the browser selection with a
-    // tiny fragment; capture the drag from pointer coordinates instead.
-    selectionStrategy: "pointer",
-    // The signed-in app shell is sized to the viewport, which ignores the
-    // narrowed <body>; its layout wrapper uses a generated "Layout-…" class.
+
+    selectionStrategy: "native-sticky",
+    preferOutermostAssistant: true,
+    useAssistantTurnAsContentRoot: true,
+
     dockFixups: [
       'body :is([class^="Layout-"], [class*=" Layout-"]) { width: 100% !important; min-width: 0 !important; max-width: 100% !important; }',
       "body .w-screen { width: 100% !important; }",
       "body .max-w-screen { max-width: 100% !important; }",
       "body .min-w-screen { min-width: 0 !important; }",
     ],
+
     assistantSelectors: [
-      MODERN_ASSISTANT_SELECTOR,
+      '[data-content-search-unit-key$=":assistant"]',
+      '[data-chatgpt-search-unit-key$=":assistant"]',
       '[data-message-author-role="assistant"]',
+      '[data-role="assistant"]',
+      '[data-message-author="assistant"]',
+      'article[data-turn="assistant"]',
       '[data-turn="assistant"]',
       'article[data-turn-role="assistant"]',
       '[data-testid="assistant-message"]',
     ],
+
     assistantFallbackSelectors: [".agent-turn"],
+
     userSelectors: [
       ...MODERN_USER_SELECTORS,
       '[data-message-author-role="user"]',
       '[data-turn="user"]',
       'article[data-turn-role="user"]',
     ],
+
     contentSelector:
-      '[data-markdown-text-style="assistant-message"], .markdown, .prose, [class*="markdown" i], [class*="prose" i], .whitespace-pre-wrap',
+      '.markdown, .prose, [class*="markdown" i], [class*="prose" i], [data-markdown-text-style="assistant-message"], .whitespace-pre-wrap',
     streamingSelectors: ['[data-is-streaming="true"]', ".result-streaming"],
     // data-testid is language-independent; aria-labels are English-only fallbacks.
     stopButtonSelectors: [

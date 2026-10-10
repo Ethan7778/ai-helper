@@ -288,7 +288,6 @@ ${excerpt}` : chunks[i];
   }
 
   // extension/adapters/chatgpt.ts
-  var MODERN_ASSISTANT_SELECTOR = '[data-markdown-text-style="assistant-message"]';
   var MODERN_USER_SELECTORS = [
     '[data-content-search-unit-key$=":user"]',
     '[data-chatgpt-search-unit-key$=":user"]'
@@ -315,12 +314,13 @@ ${excerpt}` : chunks[i];
   function createChatGptAdapter() {
     return createDomAdapter({
       siteId: "chatgpt",
-      selectionStrategy: "pointer",
+      selectionStrategy: "native",
       assistantSelectors: [
-        MODERN_ASSISTANT_SELECTOR,
         '[data-message-author-role="assistant"]',
         '[data-turn="assistant"]',
         'article[data-turn-role="assistant"]',
+        '[data-content-search-unit-key$=":assistant"]',
+        '[data-chatgpt-search-unit-key$=":assistant"]',
         '[data-testid="assistant-message"]'
       ],
       assistantFallbackSelectors: [".agent-turn"],

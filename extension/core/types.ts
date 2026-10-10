@@ -22,7 +22,7 @@ export interface Thread {
 }
 
 /** How the Ask button captures a highlight on this site. */
-export type SelectionStrategy = "native" | "pointer";
+export type SelectionStrategy = "native" | "native-sticky" | "pointer";
 
 /** Site-specific hooks so the core engine stays agnostic of host DOM. */
 export interface SiteAdapter {
