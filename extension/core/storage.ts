@@ -1,6 +1,9 @@
 import { createLogger } from "./log";
 import {
   DEFAULT_UI_APPEARANCE,
+  DEFAULT_ANSWER_LENGTH,
+  normalizeAnswerLength,
+  type AnswerLength,
   type HighlightStyle,
   type Thread,
   type UiAppearance,
@@ -153,6 +156,43 @@ export async function migrateThreads(
 
 const SIDEBAR_WIDTH_KEY = "ui:sidebarWidth";
 const UI_APPEARANCE_KEY = "ui:appearance";
+export const ANSWER_LENGTH_KEY = "ui:answerLength";
+
+/** Kept separate from appearance so existing highlight preferences are preserved. */
+export async function loadAnswerLength(): Promise<AnswerLength> {
+  if (!isExtensionAlive()) return DEFAULT_ANSWER_LENGTH;
+  return new Promise((resolve) => {
+    try {
+      chrome.storage.local.get([ANSWER_LENGTH_KEY], (result) => {
+        resolve(chrome.runtime.lastError
+          ? DEFAULT_ANSWER_LENGTH
+          : normalizeAnswerLength(result[ANSWER_LENGTH_KEY]));
+      });
+    } catch {
+      resolve(DEFAULT_ANSWER_LENGTH);
+    }
+  });
+}
+
+export async function saveAnswerLength(value: AnswerLength): Promise<void> {
+  if (!isExtensionAlive()) throw new Error(EXTENSION_RELOAD_MSG);
+  return new Promise((resolve, reject) => {
+    try {
+      chrome.storage.local.set(
+        { [ANSWER_LENGTH_KEY]: normalizeAnswerLength(value) },
+        () => {
+          if (chrome.runtime.lastError) {
+            reject(asStorageError(new Error(chrome.runtime.lastError.message || "answer length save failed")));
+          } else {
+            resolve();
+          }
+        }
+      );
+    } catch (err) {
+      reject(asStorageError(err));
+    }
+  });
+}
 
 const HEX_COLOR_RE = /^#[0-9a-fA-F]{6}$/;
 

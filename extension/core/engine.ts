@@ -15,12 +15,16 @@ import {
   isExtensionAlive,
   loadThreads,
   loadUiAppearance,
+  loadAnswerLength,
   migrateThreads,
   removeLegacyKeys,
   saveThreads,
   saveUiAppearance,
+  saveAnswerLength,
+  ANSWER_LENGTH_KEY,
 } from "./storage";
-import type { SiteAdapter, Thread, UiAppearance } from "./types";
+import type { SiteAdapter, Thread, UiAppearance, AnswerLength } from "./types";
+import { normalizeAnswerLength } from "./types";
 
 const log = createLogger("engine");
 
@@ -49,6 +53,7 @@ export async function bootEngine(adapter: SiteAdapter): Promise<() => void> {
   const loadedAtBoot = await loadThreads(adapter.siteId, conversationId);
   let threads: Thread[] = withReplies(loadedAtBoot);
   let appearance: UiAppearance = await loadUiAppearance();
+  let answerLength: AnswerLength = await loadAnswerLength();
   const messageEls = new Map<string, HTMLElement>();
   /** Messages still streaming; highlights are applied once they complete. */
   const pendingReady = new Map<HTMLElement, { messageId: string; since: number }>();
@@ -218,6 +223,10 @@ export async function bootEngine(adapter: SiteAdapter): Promise<() => void> {
   };
 
   const sidebar = new Sidebar({
+    onAnswerLengthChange: async (next) => {
+      await saveAnswerLength(next);
+      answerLength = next;
+    },
     onFocusThread: (threadId) => {
       const thread = threads.find((t) => t.id === threadId);
       if (thread) {
@@ -310,6 +319,7 @@ export async function bootEngine(adapter: SiteAdapter): Promise<() => void> {
           surroundingContext: surroundingContext(current),
           conversationExcerpt: conversationExcerpt(),
           question,
+          answerLength,
           messageId: current.messageId,
           threadId: current.id,
           sideConversationId: current.sideConversationId,
@@ -351,7 +361,17 @@ export async function bootEngine(adapter: SiteAdapter): Promise<() => void> {
   }, { dockFixups: adapter.dockFixups });
 
   sidebar.setAppearance(appearance);
+  sidebar.setAnswerLength(answerLength);
   sidebar.setThreads(threads);
+  const onPreferencesChanged = (
+    changes: Record<string, chrome.storage.StorageChange>,
+    areaName: string
+  ) => {
+    if (areaName !== "local" || !changes[ANSWER_LENGTH_KEY]) return;
+    answerLength = normalizeAnswerLength(changes[ANSWER_LENGTH_KEY].newValue);
+    sidebar.setAnswerLength(answerLength);
+  };
+  chrome.storage.onChanged.addListener(onPreferencesChanged);
 
   const registerMessage = (el: HTMLElement) => {
     const messageId = adapter.getMessageId(el);
@@ -555,5 +575,6 @@ export async function bootEngine(adapter: SiteAdapter): Promise<() => void> {
     stopObserving();
     clearInterval(tick);
     unregisterDiagnostics();
+    chrome.storage.onChanged.removeListener(onPreferencesChanged);
   };
 }
