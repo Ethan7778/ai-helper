@@ -95,3 +95,4 @@ Save them under `docs/store-screenshots/` (create the folder) before uploading â
 3. Submit for review  
 
 First review often takes several days. If they ask about host permissions or how answers are generated, use the privacy policy wording: answers go through the userâ€™s logged-in session on those three sites; nothing is sent to an AI Helper server.
+
