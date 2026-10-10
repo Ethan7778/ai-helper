@@ -209,7 +209,7 @@ export async function bootEngine(adapter: SiteAdapter): Promise<() => void> {
     marks[0]!.scrollIntoView({ behavior: "smooth", block: "center" });
     for (const mark of marks) {
       if (appearance.highlightStyle === "underline") {
-        mark.style.textDecorationThickness = "3.5px";
+        mark.style.backgroundSize = "100% 3px";
       } else {
         mark.style.background = hexToRgba(appearance.highlightColor, 0.7);
       }

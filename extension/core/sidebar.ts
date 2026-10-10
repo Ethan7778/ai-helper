@@ -717,11 +717,15 @@ const STYLES = `
   background: var(--preview-fill, rgba(201, 162, 39, 0.45));
 }
 .preview-mark.underline {
-  background: transparent;
-  text-decoration: underline;
-  text-decoration-color: var(--accent);
-  text-decoration-thickness: 2px;
-  text-underline-offset: 2px;
+  background-color: transparent;
+  background-image: linear-gradient(var(--accent), var(--accent));
+  background-repeat: no-repeat;
+  background-size: 100% 2px;
+  background-position: 0 calc(100% - 1px);
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+  padding: 0;
+  text-decoration: none;
 }
 @media (prefers-reduced-motion: reduce) {
   .panel, .fab, .resizer::after { transition: none; }

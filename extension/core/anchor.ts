@@ -18,29 +18,42 @@ export function hexToRgba(hex: string, alpha: number): string {
   return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 }
 
+/** A solid bar under each line of text, including the spaces between words. */
+function paintUnderline(mark: HTMLElement, color: string, thicknessPx: number): void {
+  mark.style.backgroundColor = "transparent";
+  mark.style.backgroundImage = `linear-gradient(${color}, ${color})`;
+  mark.style.backgroundRepeat = "no-repeat";
+  mark.style.backgroundSize = `100% ${thicknessPx}px`;
+  mark.style.backgroundPosition = "0 calc(100% - 1px)";
+  mark.style.setProperty("-webkit-box-decoration-break", "clone");
+  mark.style.boxDecorationBreak = "clone";
+  mark.style.textDecoration = "none";
+  mark.style.borderBottom = "none";
+  mark.style.padding = "0";
+}
+
 /** Apply classic fill or underline styling to a highlight mark. */
 export function styleHighlightMark(
   mark: HTMLElement,
   appearance: UiAppearance = DEFAULT_UI_APPEARANCE
 ): void {
   mark.style.cursor = "pointer";
-  mark.style.borderRadius = "2px";
+  mark.style.borderRadius = "0";
   mark.style.color = "inherit";
   mark.style.display = "inline";
-  mark.style.borderBottom = "none";
-  mark.style.paddingBottom = "";
+  mark.style.margin = "0";
+  mark.style.padding = "0";
+  mark.style.border = "none";
   mark.style.boxShadow = "none";
+  mark.style.letterSpacing = "inherit";
+  mark.style.wordSpacing = "inherit";
   if (appearance.highlightStyle === "underline") {
-    // text-decoration follows the glyphs. border-bottom follows the box, and
-    // Claude's column layout stretches a mark between paragraphs to full width.
-    mark.style.background = "transparent";
-    mark.style.textDecorationLine = "underline";
-    mark.style.textDecorationColor = appearance.highlightColor;
-    mark.style.textDecorationThickness = "2px";
-    mark.style.textUnderlineOffset = "2px";
-    mark.style.textDecorationSkipInk = "none";
+    // A background bar stays continuous through spaces and reaches the last
+    // letter. text-decoration breaks between words and stops short at the end.
+    paintUnderline(mark, appearance.highlightColor, 2);
   } else {
     mark.style.background = hexToRgba(appearance.highlightColor, 0.45);
+    mark.style.borderRadius = "2px";
     mark.style.textDecoration = "none";
   }
 }
@@ -1233,7 +1246,30 @@ export function unwrapHighlights(root: HTMLElement): void {
     }
     parent.removeChild(mark);
   }
+  const wraps = Array.from(
+    root.querySelectorAll<HTMLElement>("[data-ai-helper-wrap]")
+  );
+  for (const wrap of wraps) {
+    const parent = wrap.parentNode;
+    if (!parent) continue;
+    while (wrap.firstChild) {
+      parent.insertBefore(wrap.firstChild, wrap);
+    }
+    parent.removeChild(wrap);
+  }
   root.normalize();
+}
+
+/** True when inserting sibling nodes would be spaced apart by the parent layout. */
+function parentSeparatesChildren(parent: Node): boolean {
+  if (!(parent instanceof Element)) return false;
+  const display = getComputedStyle(parent).display;
+  return (
+    display === "flex" ||
+    display === "inline-flex" ||
+    display === "grid" ||
+    display === "inline-grid"
+  );
 }
 
 /**
@@ -1323,7 +1359,20 @@ function wrapTextNodePortion(
   if (before) frag.appendChild(document.createTextNode(before));
   frag.appendChild(mark);
   if (after) frag.appendChild(document.createTextNode(after));
-  parent.replaceChild(frag, node);
+  // Claude lays some replies out with flex/grid. Splitting one text node into
+  // the mark plus the text after it turns those into separate items, which
+  // opens a gap at the end of the highlight. Keep them in one box.
+  if (parentSeparatesChildren(parent)) {
+    const wrap = document.createElement("span");
+    wrap.dataset.aiHelperWrap = "1";
+    wrap.style.display = "block";
+    wrap.style.minWidth = "0";
+    wrap.style.maxWidth = "100%";
+    wrap.appendChild(frag);
+    parent.replaceChild(wrap, node);
+  } else {
+    parent.replaceChild(frag, node);
+  }
 }
 
 /**
