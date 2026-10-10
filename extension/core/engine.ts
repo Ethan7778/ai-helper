@@ -11,11 +11,13 @@ import {
   EXTENSION_RELOAD_MSG,
   isExtensionAlive,
   loadThreads,
+  loadUiAppearance,
   migrateThreads,
   removeLegacyKeys,
   saveThreads,
+  saveUiAppearance,
 } from "./storage";
-import type { SiteAdapter, Thread } from "./types";
+import type { SiteAdapter, Thread, UiAppearance } from "./types";
 
 const log = createLogger("engine");
 
@@ -43,6 +45,7 @@ export async function bootEngine(adapter: SiteAdapter): Promise<() => void> {
     list.filter((t) => t.replies.length > 0);
   const loadedAtBoot = await loadThreads(adapter.siteId, conversationId);
   let threads: Thread[] = withReplies(loadedAtBoot);
+  let appearance: UiAppearance = await loadUiAppearance();
   const messageEls = new Map<string, HTMLElement>();
   /** Messages still streaming; highlights are applied once they complete. */
   const pendingReady = new Map<HTMLElement, { messageId: string; since: number }>();
@@ -118,7 +121,7 @@ export async function bootEngine(adapter: SiteAdapter): Promise<() => void> {
       el.dataset.aiHelperRaw = getPlainText(el);
     }
     const forMessage = threads.filter((t) => t.messageId === messageId);
-    applyHighlightsToElement(el, forMessage);
+    applyHighlightsToElement(el, forMessage, appearance);
     bindMarkClicks(el);
   };
 
@@ -136,11 +139,23 @@ export async function bootEngine(adapter: SiteAdapter): Promise<() => void> {
       ) as HTMLElement | null;
       if (mark) {
         mark.scrollIntoView({ behavior: "smooth", block: "center" });
-        mark.style.outline = "2px solid #c9a227";
+        mark.style.outline = `2px solid ${appearance.highlightColor}`;
         setTimeout(() => {
           mark.style.outline = "";
         }, 1200);
       }
+    },
+    onAppearanceChange: async (next) => {
+      appearance = next;
+      try {
+        await saveUiAppearance(next);
+      } catch (err) {
+        log.warn(
+          "could not save appearance:",
+          err instanceof Error ? err.message : err
+        );
+      }
+      refreshHighlights();
     },
     onDeleteThread: async (threadId) => {
       if (!isExtensionAlive()) {
@@ -241,6 +256,7 @@ export async function bootEngine(adapter: SiteAdapter): Promise<() => void> {
     },
   }, { dockFixups: adapter.dockFixups });
 
+  sidebar.setAppearance(appearance);
   sidebar.setThreads(threads);
 
   const registerMessage = (el: HTMLElement) => {

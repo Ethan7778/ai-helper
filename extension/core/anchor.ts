@@ -1,7 +1,45 @@
 import { pageRightEdge } from "./dock";
 import { rafThrottle } from "./dom";
 import { createLogger } from "./log";
-import type { Thread } from "./types";
+import {
+  DEFAULT_UI_APPEARANCE,
+  type Thread,
+  type UiAppearance,
+} from "./types";
+
+/** Convert `#rrggbb` to `rgba(r,g,b,a)`. Falls back to gold if invalid. */
+export function hexToRgba(hex: string, alpha: number): string {
+  const m = /^#([0-9a-fA-F]{6})$/.exec(hex.trim());
+  if (!m) return `rgba(201, 162, 39, ${alpha})`;
+  const n = parseInt(m[1]!, 16);
+  const r = (n >> 16) & 255;
+  const g = (n >> 8) & 255;
+  const b = n & 255;
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
+/** Apply classic fill or underline styling to a highlight mark. */
+export function styleHighlightMark(
+  mark: HTMLElement,
+  appearance: UiAppearance = DEFAULT_UI_APPEARANCE
+): void {
+  mark.style.cursor = "pointer";
+  mark.style.borderRadius = "2px";
+  mark.style.color = "inherit";
+  if (appearance.highlightStyle === "underline") {
+    mark.style.background = "transparent";
+    mark.style.boxShadow = "none";
+    mark.style.borderBottom = `2.5px solid ${appearance.highlightColor}`;
+    mark.style.paddingBottom = "1px";
+    mark.style.textDecoration = "none";
+  } else {
+    mark.style.background = hexToRgba(appearance.highlightColor, 0.45);
+    mark.style.boxShadow = "none";
+    mark.style.borderBottom = "none";
+    mark.style.paddingBottom = "";
+    mark.style.textDecoration = "none";
+  }
+}
 
 const log = createLogger("anchor");
 
@@ -1131,7 +1169,8 @@ export function unwrapHighlights(root: HTMLElement): void {
  */
 export function wrapHighlightsInPlace(
   root: HTMLElement,
-  threads: Pick<Thread, "id" | "anchorStart" | "anchorEnd">[]
+  threads: Pick<Thread, "id" | "anchorStart" | "anchorEnd">[],
+  appearance: UiAppearance = DEFAULT_UI_APPEARANCE
 ): void {
   unwrapHighlights(root);
 
@@ -1141,7 +1180,7 @@ export function wrapHighlightsInPlace(
   const ordered = [...kept].sort((a, b) => b.anchorStart - a.anchorStart);
 
   for (const t of ordered) {
-    wrapTextRange(root, t.anchorStart, t.anchorEnd, t.id);
+    wrapTextRange(root, t.anchorStart, t.anchorEnd, t.id, appearance);
   }
 }
 
@@ -1149,7 +1188,8 @@ function wrapTextRange(
   root: HTMLElement,
   start: number,
   end: number,
-  threadId: string
+  threadId: string,
+  appearance: UiAppearance
 ): void {
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
   let offset = 0;
@@ -1180,7 +1220,7 @@ function wrapTextRange(
 
   for (let i = segments.length - 1; i >= 0; i--) {
     const seg = segments[i]!;
-    wrapTextNodePortion(seg.node, seg.from, seg.to, threadId);
+    wrapTextNodePortion(seg.node, seg.from, seg.to, threadId, appearance);
   }
 }
 
@@ -1188,7 +1228,8 @@ function wrapTextNodePortion(
   node: Text,
   from: number,
   to: number,
-  threadId: string
+  threadId: string,
+  appearance: UiAppearance
 ): void {
   const parent = node.parentNode;
   if (!parent) return;
@@ -1202,9 +1243,7 @@ function wrapTextNodePortion(
   const mark = document.createElement("mark");
   mark.dataset.threadId = threadId;
   mark.textContent = mid;
-  mark.style.background = "rgba(201, 162, 39, 0.45)";
-  mark.style.borderRadius = "2px";
-  mark.style.cursor = "pointer";
+  styleHighlightMark(mark, appearance);
 
   const frag = document.createDocumentFragment();
   if (before) frag.appendChild(document.createTextNode(before));
@@ -1219,7 +1258,8 @@ function wrapTextNodePortion(
  */
 export function applyHighlightsToElement(
   el: HTMLElement,
-  threads: Thread[]
+  threads: Thread[],
+  appearance: UiAppearance = DEFAULT_UI_APPEARANCE
 ): void {
   const relevant = threads.filter((t) => t.anchorEnd > t.anchorStart);
 
@@ -1232,5 +1272,5 @@ export function applyHighlightsToElement(
     el.dataset.aiHelperRaw = rawText;
   }
 
-  wrapHighlightsInPlace(el, relevant);
+  wrapHighlightsInPlace(el, relevant, appearance);
 }

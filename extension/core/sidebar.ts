@@ -1,4 +1,11 @@
-import type { AskFollowUpRequest, AskFollowUpResponse, Thread } from "./types";
+import type {
+  AskFollowUpRequest,
+  AskFollowUpResponse,
+  HighlightStyle,
+  Thread,
+  UiAppearance,
+} from "./types";
+import { DEFAULT_UI_APPEARANCE } from "./types";
 import { formatReplyHtml } from "./text-clean";
 import { fetchAccessTokenFromPage } from "./chatgpt-auth";
 import { completeViaChatGptSession } from "../background/chatgpt-session";
@@ -18,6 +25,7 @@ import {
 import { loadSidebarWidth, saveSidebarWidth } from "./storage";
 import { StreamSmoother } from "./stream-smoother";
 import { createLogger } from "./log";
+import { hexToRgba } from "./anchor";
 
 const log = createLogger("sidebar");
 
@@ -27,6 +35,16 @@ const COMPOSER_MAX_HEIGHT = 200;
 const STICK_TO_BOTTOM_PX = 48;
 const FONT_STACK = `-apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif`;
 const MONO_STACK = `ui-monospace, SFMono-Regular, Menlo, Consolas, monospace`;
+const HIGHLIGHT_COLOR_PRESETS = [
+  "#c9a227",
+  "#eab308",
+  "#22c55e",
+  "#3b82f6",
+  "#ec4899",
+  "#f97316",
+] as const;
+
+const GEAR_ICON = `<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 1v2.5M12 20.5V23M4.22 4.22l1.77 1.77M18.01 18.01l1.77 1.77M1 12h2.5M20.5 12H23M4.22 19.78l1.77-1.77M18.01 5.99l1.77-1.77"/></svg>`;
 
 export interface SidebarCallbacks {
   onFocusThread: (threadId: string) => void;
@@ -36,6 +54,7 @@ export interface SidebarCallbacks {
     question: string,
     onPartial?: (text: string) => void
   ) => Promise<{ ok: boolean; reply?: string; error?: string }>;
+  onAppearanceChange: (appearance: UiAppearance) => void | Promise<void>;
 }
 
 export interface SidebarOptions {
@@ -49,6 +68,57 @@ const BACK_ICON = `<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="
 const STYLES = `
 :host {
   all: initial;
+  --bg: #f7f7f5;
+  --bg-elevated: #ffffff;
+  --bg-muted: #ecece8;
+  --bg-hover: #f3f3f0;
+  --text: #1a1a1a;
+  --text-secondary: #333333;
+  --text-muted: #777777;
+  --border: #e6e6e1;
+  --border-strong: #d6d6d0;
+  --accent: #c9a227;
+  --accent-soft: #e2c55a;
+  --accent-ring: rgba(201, 162, 39, 0.2);
+  --quote-bg: #fbf6e3;
+  --danger: #a33;
+  --danger-bg: #f5eaea;
+  --fab-bg: #0d0d0d;
+  --fab-bg-hover: #2f2f2f;
+  --fab-fg: #ffffff;
+  --fab-border: rgba(255,255,255,0.18);
+  --send-bg: #1a1a1a;
+  --send-fg: #ffffff;
+  --shadow: rgba(0,0,0,0.08);
+  --code-inline-bg: #ecece8;
+  --stream-dot: #1a1a1a;
+  --live: #9a7b12;
+}
+@media (prefers-color-scheme: dark) {
+  :host {
+    --bg: #1c1c1e;
+    --bg-elevated: #2a2a2c;
+    --bg-muted: #3a3a3c;
+    --bg-hover: #323234;
+    --text: #f2f2f2;
+    --text-secondary: #d8d8d8;
+    --text-muted: #9a9a9a;
+    --border: #3a3a3c;
+    --border-strong: #4a4a4c;
+    --quote-bg: rgba(201, 162, 39, 0.14);
+    --danger: #f07178;
+    --danger-bg: rgba(240, 113, 120, 0.14);
+    --fab-bg: #2a2a2c;
+    --fab-bg-hover: #3a3a3c;
+    --fab-fg: #f2f2f2;
+    --fab-border: rgba(255,255,255,0.12);
+    --send-bg: #f2f2f2;
+    --send-fg: #1a1a1a;
+    --shadow: rgba(0,0,0,0.45);
+    --code-inline-bg: #3a3a3c;
+    --stream-dot: #f2f2f2;
+    --live: #e2c55a;
+  }
 }
 * {
   box-sizing: border-box;
@@ -62,13 +132,13 @@ const STYLES = `
   width: 28px;
   height: 72px;
   padding: 0;
-  border: 1px solid rgba(255,255,255,0.18);
+  border: 1px solid var(--fab-border);
   border-radius: 999px;
-  background: #0d0d0d;
-  color: #fff;
+  background: var(--fab-bg);
+  color: var(--fab-fg);
   font: 600 11px/1 ${FONT_STACK};
   cursor: pointer;
-  box-shadow: 0 4px 14px rgba(0,0,0,0.25);
+  box-shadow: 0 4px 14px var(--shadow);
   writing-mode: vertical-rl;
   text-orientation: mixed;
   letter-spacing: 0.04em;
@@ -78,7 +148,7 @@ const STYLES = `
   transition: right 0.2s ease;
 }
 .fab:hover {
-  background: #2f2f2f;
+  background: var(--fab-bg-hover);
 }
 .fab.dragging {
   transition: none;
@@ -90,13 +160,13 @@ const STYLES = `
   height: 100vh;
   width: ${SIDEBAR_DEFAULT_WIDTH}px;
   max-width: 100vw;
-  background: #f9f9f7;
-  color: #1a1a1a;
+  background: var(--bg);
+  color: var(--text);
   font-family: ${FONT_STACK};
   font-size: 13.5px;
   line-height: 1.55;
-  border-left: 1px solid #deded9;
-  box-shadow: -4px 0 24px rgba(0,0,0,0.08);
+  border-left: 1px solid var(--border);
+  box-shadow: -4px 0 24px var(--shadow);
   display: flex;
   flex-direction: column;
   z-index: 2147483646;
@@ -138,7 +208,7 @@ const STYLES = `
 }
 .resizer:hover::after,
 .panel.dragging .resizer::after {
-  background: #c9a227;
+  background: var(--accent);
 }
 .view {
   flex: 1;
@@ -150,7 +220,7 @@ const STYLES = `
   flex-shrink: 0;
   height: 52px;
   padding: 0 10px 0 16px;
-  border-bottom: 1px solid #e6e6e1;
+  border-bottom: 1px solid var(--border);
   font-weight: 600;
   font-size: 14px;
   display: flex;
@@ -170,34 +240,41 @@ const STYLES = `
 .count {
   font-weight: 500;
   font-size: 11px;
-  color: #666;
-  background: #ececE8;
+  color: var(--text-muted);
+  background: var(--bg-muted);
   border-radius: 999px;
   padding: 1px 8px;
 }
 .icon-btn {
   border: none;
   background: transparent;
-  color: #444;
+  color: var(--text-secondary);
   width: 32px;
   height: 32px;
+  padding: 0;
   border-radius: 8px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   cursor: pointer;
   flex-shrink: 0;
+  line-height: 0;
+}
+.icon-btn svg {
+  display: block;
+  flex-shrink: 0;
 }
 .icon-btn:hover {
-  background: #ececE8;
+  background: var(--bg-muted);
 }
-.list {
+.list,
+.settings {
   flex: 1;
   overflow-y: auto;
   padding: 10px;
 }
 .empty {
-  color: #777;
+  color: var(--text-muted);
   padding: 28px 16px;
   text-align: center;
 }
@@ -207,19 +284,19 @@ const STYLES = `
   gap: 6px;
   padding: 10px 6px 10px 12px;
   margin-bottom: 6px;
-  border: 1px solid #e6e6e1;
+  border: 1px solid var(--border);
   border-radius: 10px;
-  background: #fff;
+  background: var(--bg-elevated);
   cursor: pointer;
   user-select: none;
 }
 .row:hover {
-  border-color: #d2d2cc;
-  background: #fdfdfc;
+  border-color: var(--border-strong);
+  background: var(--bg-hover);
 }
 .row.active {
-  border-color: #c9a227;
-  box-shadow: 0 0 0 1px #c9a22733;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent-ring);
 }
 .row-main {
   flex: 1;
@@ -227,24 +304,24 @@ const STYLES = `
 }
 .quote {
   font-style: italic;
-  color: #333;
+  color: var(--text-secondary);
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
-  border-left: 3px solid #e2c55a;
+  border-left: 3px solid var(--accent-soft);
   padding-left: 8px;
 }
 .preview {
   margin-top: 4px;
   font-size: 12px;
-  color: #777;
+  color: var(--text-muted);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 .preview .live {
-  color: #9a7b12;
+  color: var(--live);
 }
 .menu {
   position: relative;
@@ -253,7 +330,7 @@ const STYLES = `
 .menu-btn {
   border: none;
   background: transparent;
-  color: #888;
+  color: var(--text-muted);
   font-size: 18px;
   line-height: 1;
   padding: 2px 6px;
@@ -263,8 +340,8 @@ const STYLES = `
 }
 .menu-btn:hover,
 .menu.open .menu-btn {
-  background: #eee;
-  color: #333;
+  background: var(--bg-muted);
+  color: var(--text-secondary);
 }
 .menu-dropdown {
   display: none;
@@ -273,10 +350,10 @@ const STYLES = `
   right: 0;
   min-width: 130px;
   padding: 4px;
-  background: #fff;
-  border: 1px solid #e4e4e0;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
   border-radius: 8px;
-  box-shadow: 0 6px 18px rgba(0,0,0,0.12);
+  box-shadow: 0 6px 18px var(--shadow);
   z-index: 4;
 }
 .menu.open .menu-dropdown {
@@ -293,20 +370,20 @@ const STYLES = `
   font: inherit;
   font-weight: 400;
   font-size: 13px;
-  color: #a33;
+  color: var(--danger);
   cursor: pointer;
 }
 .menu-item:hover {
-  background: #f5eaea;
+  background: var(--danger-bg);
 }
 .quote-block {
   flex-shrink: 0;
   margin: 12px 14px 0;
   padding: 8px 10px 8px 12px;
-  border-left: 3px solid #e2c55a;
-  background: #fbf6e3;
+  border-left: 3px solid var(--accent-soft);
+  background: var(--quote-bg);
   border-radius: 0 8px 8px 0;
-  color: #3b3b3b;
+  color: var(--text-secondary);
   font-style: italic;
   cursor: pointer;
   max-height: 30vh;
@@ -333,7 +410,7 @@ const STYLES = `
 .hint {
   margin: auto 0;
   text-align: center;
-  color: #888;
+  color: var(--text-muted);
 }
 .msg {
   max-width: 100%;
@@ -343,7 +420,7 @@ const STYLES = `
 .msg.user {
   align-self: flex-end;
   max-width: 85%;
-  background: #ececE8;
+  background: var(--bg-muted);
   border-radius: 18px;
   padding: 8px 14px;
   white-space: pre-wrap;
@@ -382,13 +459,13 @@ const STYLES = `
 .body blockquote {
   margin: 0 0 8px;
   padding-left: 10px;
-  border-left: 3px solid #d8d8d2;
-  color: #555;
+  border-left: 3px solid var(--border-strong);
+  color: var(--text-muted);
 }
 .body code {
   font-family: ${MONO_STACK};
   font-size: 12px;
-  background: #ececE8;
+  background: var(--code-inline-bg);
   border-radius: 4px;
   padding: 1px 4px;
 }
@@ -426,7 +503,7 @@ const STYLES = `
   height: 8px;
   margin-left: 4px;
   border-radius: 50%;
-  background: #1a1a1a;
+  background: var(--stream-dot);
   vertical-align: middle;
   animation: pulse 1s ease-in-out infinite;
 }
@@ -439,7 +516,7 @@ const STYLES = `
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: #9a9a95;
+  background: var(--text-muted);
   animation: bounce 1.2s ease-in-out infinite;
 }
 .typing span:nth-child(2) { animation-delay: 0.15s; }
@@ -458,27 +535,27 @@ const STYLES = `
 }
 .status {
   font-size: 11.5px;
-  color: #a33;
+  color: var(--danger);
   margin: 0 4px 6px;
 }
 .status:empty {
   display: none;
 }
 .status.waiting {
-  color: #777;
+  color: var(--text-muted);
 }
 .composer {
   display: flex;
   align-items: flex-end;
   gap: 6px;
   padding: 6px 6px 6px 12px;
-  border: 1px solid #d6d6d0;
+  border: 1px solid var(--border-strong);
   border-radius: 18px;
-  background: #fff;
-  box-shadow: 0 1px 4px rgba(0,0,0,0.04);
+  background: var(--bg-elevated);
+  box-shadow: 0 1px 4px var(--shadow);
 }
 .composer:focus-within {
-  border-color: #b5b5ae;
+  border-color: var(--accent);
 }
 .composer textarea {
   flex: 1;
@@ -489,7 +566,7 @@ const STYLES = `
   font: inherit;
   line-height: 1.45;
   background: transparent;
-  color: #111;
+  color: var(--text);
   resize: none;
   overflow-y: hidden;
   max-height: ${COMPOSER_MAX_HEIGHT}px;
@@ -502,8 +579,8 @@ const STYLES = `
   height: 32px;
   border: none;
   border-radius: 50%;
-  background: #1a1a1a;
-  color: #fff;
+  background: var(--send-bg);
+  color: var(--send-fg);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -518,13 +595,93 @@ const STYLES = `
 .spinner {
   width: 14px;
   height: 14px;
-  border: 2px solid rgba(255,255,255,0.35);
-  border-top-color: #fff;
+  border: 2px solid color-mix(in srgb, var(--send-fg) 35%, transparent);
+  border-top-color: var(--send-fg);
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
 }
 @keyframes spin {
   to { transform: rotate(360deg); }
+}
+.settings-section {
+  margin-bottom: 18px;
+}
+.settings-label {
+  display: block;
+  font-weight: 600;
+  font-size: 12px;
+  margin-bottom: 8px;
+  color: var(--text-secondary);
+}
+.settings-hint {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin: 0 0 10px;
+}
+.color-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.color-swatches {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.swatch {
+  width: 24px;
+  height: 24px;
+  border-radius: 999px;
+  border: 2px solid transparent;
+  cursor: pointer;
+  padding: 0;
+}
+.swatch.active {
+  border-color: var(--text);
+  box-shadow: 0 0 0 2px var(--bg);
+}
+.color-picker {
+  width: 36px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-elevated);
+  cursor: pointer;
+}
+.style-toggle {
+  display: flex;
+  gap: 6px;
+}
+.style-btn {
+  flex: 1;
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+  color: var(--text);
+  border-radius: 10px;
+  padding: 10px 8px;
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.style-btn.active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent-ring);
+  background: var(--quote-bg);
+}
+.preview-mark {
+  display: inline;
+  border-radius: 2px;
+  cursor: default;
+}
+.preview-mark.classic {
+  background: var(--preview-fill, rgba(201, 162, 39, 0.45));
+}
+.preview-mark.underline {
+  background: transparent;
+  border-bottom: 2.5px solid var(--accent);
+  padding-bottom: 1px;
 }
 @media (prefers-reduced-motion: reduce) {
   .panel, .fab, .resizer::after { transition: none; }
@@ -563,6 +720,9 @@ export class Sidebar {
   private partials = new Map<string, string>();
   private openQuote = false;
   private activeId: string | null = null;
+  /** Settings screen open from the thread list header. */
+  private settingsOpen = false;
+  private appearance: UiAppearance = { ...DEFAULT_UI_APPEARANCE };
   /** Start collapsed so we don't cover the site's chrome until needed. */
   private collapsed = true;
   /** Width the user chose; the applied width is this clamped to the viewport. */
@@ -601,6 +761,7 @@ export class Sidebar {
       this.shadow.addEventListener(type, (event) => event.stopPropagation());
     }
     this.renderShell();
+    this.applyAppearanceVars();
     this.applyLayout();
 
     void loadSidebarWidth().then((saved) => {
@@ -626,12 +787,30 @@ export class Sidebar {
   describe(): Record<string, unknown> {
     return {
       collapsed: this.collapsed,
-      view: this.openId ? "thread" : "list",
+      view: this.settingsOpen ? "settings" : this.openId ? "thread" : "list",
       preferredWidth: this.preferredWidth,
+      appearance: this.appearance,
       hostParent: this.host.parentElement?.tagName.toLowerCase() ?? null,
       panelRect: this.panel.getBoundingClientRect().toJSON(),
       ...this.dock.describe(),
     };
+  }
+
+  setAppearance(appearance: UiAppearance): void {
+    this.appearance = { ...appearance };
+    this.applyAppearanceVars();
+    if (this.settingsOpen) this.render();
+  }
+
+  private applyAppearanceVars(): void {
+    const color = this.appearance.highlightColor;
+    this.host.style.setProperty("--accent", color);
+    this.host.style.setProperty("--accent-soft", hexToRgba(color, 0.75));
+    this.host.style.setProperty("--accent-ring", hexToRgba(color, 0.22));
+    this.host.style.setProperty("--preview-fill", hexToRgba(color, 0.45));
+    this.host.style.setProperty("--live", color);
+    // Quote tint tracks the chosen highlight color in both themes.
+    this.host.style.setProperty("--quote-bg", hexToRgba(color, 0.14));
   }
 
   setThreads(threads: Thread[]): void {
@@ -643,6 +822,7 @@ export class Sidebar {
   }
 
   focusThread(threadId: string): void {
+    this.settingsOpen = false;
     if (this.openId && this.openId !== threadId) {
       this.discardOpenDraftIfEmpty();
     }
@@ -655,6 +835,7 @@ export class Sidebar {
   }
 
   private openThread(threadId: string): void {
+    this.settingsOpen = false;
     if (this.openId && this.openId !== threadId) {
       this.discardOpenDraftIfEmpty();
     }
@@ -668,8 +849,24 @@ export class Sidebar {
 
   private showList(): void {
     this.discardOpenDraftIfEmpty();
+    this.settingsOpen = false;
     this.openId = null;
     this.render();
+  }
+
+  private openSettings(): void {
+    this.discardOpenDraftIfEmpty();
+    this.openId = null;
+    this.settingsOpen = true;
+    this.setCollapsed(false);
+    this.render();
+  }
+
+  private updateAppearance(partial: Partial<UiAppearance>): void {
+    this.appearance = { ...this.appearance, ...partial };
+    this.applyAppearanceVars();
+    this.render();
+    void this.callbacks.onAppearanceChange(this.appearance);
   }
 
   /**
@@ -849,9 +1046,10 @@ export class Sidebar {
           }
         : null;
 
-    const thread = this.openId
-      ? this.threads.find((t) => t.id === this.openId)
-      : undefined;
+    const thread =
+      !this.settingsOpen && this.openId
+        ? this.threads.find((t) => t.id === this.openId)
+        : undefined;
 
     const prevMessages = this.viewEl.querySelector(".messages") as HTMLElement | null;
     const prevThreadId = this.viewEl.getAttribute("data-thread-id");
@@ -860,9 +1058,13 @@ export class Sidebar {
         ? { follow: isNearBottom(prevMessages), top: prevMessages.scrollTop }
         : null;
     const prevList = this.viewEl.querySelector(".list") as HTMLElement | null;
-    const listScroll = !thread && prevList ? prevList.scrollTop : 0;
+    const listScroll = !thread && !this.settingsOpen && prevList ? prevList.scrollTop : 0;
 
-    const view = thread ? this.buildThreadView(thread) : this.buildListView();
+    const view = this.settingsOpen
+      ? this.buildSettingsView()
+      : thread
+        ? this.buildThreadView(thread)
+        : this.buildListView();
     this.viewEl.replaceWith(view);
     this.viewEl = view;
 
@@ -876,7 +1078,7 @@ export class Sidebar {
         messages.scrollTop =
           !scrollState || scrollState.follow ? messages.scrollHeight : scrollState.top;
       }
-    } else {
+    } else if (!this.settingsOpen) {
       const list = view.querySelector(".list") as HTMLElement | null;
       if (list) list.scrollTop = listScroll;
     }
@@ -894,12 +1096,24 @@ export class Sidebar {
 
     const header = document.createElement("div");
     header.className = "header";
-    setHtml(
-      header,
-      `<span class="title">Highlight threads</span>${
-        this.threads.length ? `<span class="count">${this.threads.length}</span>` : ""
-      }`
-    );
+    const title = document.createElement("span");
+    title.className = "title";
+    title.textContent = "Highlight threads";
+    header.appendChild(title);
+    if (this.threads.length) {
+      const count = document.createElement("span");
+      count.className = "count";
+      count.textContent = String(this.threads.length);
+      header.appendChild(count);
+    }
+    const settingsBtn = document.createElement("button");
+    settingsBtn.type = "button";
+    settingsBtn.className = "icon-btn";
+    settingsBtn.title = "Appearance settings";
+    settingsBtn.setAttribute("aria-label", "Appearance settings");
+    setHtml(settingsBtn, GEAR_ICON);
+    settingsBtn.addEventListener("click", () => this.openSettings());
+    header.appendChild(settingsBtn);
     view.appendChild(header);
 
     const list = document.createElement("div");
@@ -916,6 +1130,120 @@ export class Sidebar {
 
     for (const thread of this.threads) list.appendChild(this.buildRow(thread));
     return view;
+  }
+
+  private buildSettingsView(): HTMLElement {
+    const view = document.createElement("div");
+    view.className = "view";
+
+    const header = document.createElement("div");
+    header.className = "header thread";
+    const back = document.createElement("button");
+    back.type = "button";
+    back.className = "icon-btn";
+    back.title = "Back to threads";
+    back.setAttribute("aria-label", "Back to threads");
+    setHtml(back, BACK_ICON);
+    back.addEventListener("click", () => this.showList());
+    const title = document.createElement("span");
+    title.className = "title";
+    title.textContent = "Appearance";
+    header.appendChild(back);
+    header.appendChild(title);
+    view.appendChild(header);
+
+    const body = document.createElement("div");
+    body.className = "settings";
+
+    const colorSection = document.createElement("div");
+    colorSection.className = "settings-section";
+    setHtml(
+      colorSection,
+      `<div class="settings-label">Highlight color</div>
+       <p class="settings-hint">Used for marks in the chat and accents in this panel.</p>`
+    );
+    const colorRow = document.createElement("div");
+    colorRow.className = "color-row";
+    const swatches = document.createElement("div");
+    swatches.className = "color-swatches";
+    for (const preset of HIGHLIGHT_COLOR_PRESETS) {
+      const swatch = document.createElement("button");
+      swatch.type = "button";
+      swatch.className = "swatch";
+      if (preset === this.appearance.highlightColor) swatch.classList.add("active");
+      swatch.style.background = preset;
+      swatch.title = preset;
+      swatch.setAttribute("aria-label", `Highlight color ${preset}`);
+      swatch.addEventListener("click", () =>
+        this.updateAppearance({ highlightColor: preset })
+      );
+      swatches.appendChild(swatch);
+    }
+    colorRow.appendChild(swatches);
+    const picker = document.createElement("input");
+    picker.type = "color";
+    picker.className = "color-picker";
+    picker.value = this.appearance.highlightColor;
+    picker.title = "Custom highlight color";
+    picker.setAttribute("aria-label", "Custom highlight color");
+    picker.addEventListener("input", () => {
+      const value = picker.value.toLowerCase();
+      if (/^#[0-9a-f]{6}$/.test(value)) {
+        this.updateAppearance({ highlightColor: value });
+      }
+    });
+    colorRow.appendChild(picker);
+    colorSection.appendChild(colorRow);
+    body.appendChild(colorSection);
+
+    const styleSection = document.createElement("div");
+    styleSection.className = "settings-section";
+    setHtml(
+      styleSection,
+      `<div class="settings-label">Highlight style</div>
+       <p class="settings-hint">Classic fills the text; underline only draws a line under it.</p>`
+    );
+    const toggle = document.createElement("div");
+    toggle.className = "style-toggle";
+    toggle.appendChild(
+      this.styleOptionButton("classic", "Classic", this.appearance.highlightStyle)
+    );
+    toggle.appendChild(
+      this.styleOptionButton("underline", "Underline", this.appearance.highlightStyle)
+    );
+    styleSection.appendChild(toggle);
+    body.appendChild(styleSection);
+
+    const previewSection = document.createElement("div");
+    previewSection.className = "settings-section";
+    setHtml(previewSection, `<div class="settings-label">Preview</div>`);
+    const preview = document.createElement("p");
+    preview.className = "settings-hint";
+    const mark = document.createElement("span");
+    mark.className = `preview-mark ${this.appearance.highlightStyle}`;
+    mark.textContent = "highlighted text";
+    preview.append("Looks like ", mark, " in the chat.");
+    previewSection.appendChild(preview);
+    body.appendChild(previewSection);
+
+    view.appendChild(body);
+    return view;
+  }
+
+  private styleOptionButton(
+    style: HighlightStyle,
+    label: string,
+    current: HighlightStyle
+  ): HTMLButtonElement {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "style-btn";
+    if (style === current) btn.classList.add("active");
+    btn.textContent = label;
+    btn.addEventListener("click", () =>
+      this.updateAppearance({ highlightStyle: style })
+    );
+    return btn;
   }
 
   private buildRow(thread: Thread): HTMLElement {

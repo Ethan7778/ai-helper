@@ -1,3 +1,18 @@
+/** How highlight marks are drawn on the host page. */
+export type HighlightStyle = "classic" | "underline";
+
+/** User-tunable sidebar / highlight appearance (persisted in extension storage). */
+export interface UiAppearance {
+  /** CSS hex color for highlight marks and sidebar accents, e.g. `#c9a227`. */
+  highlightColor: string;
+  highlightStyle: HighlightStyle;
+}
+
+export const DEFAULT_UI_APPEARANCE: UiAppearance = {
+  highlightColor: "#c9a227",
+  highlightStyle: "classic",
+};
+
 /** A single turn inside a highlight thread. */
 export interface Reply {
   role: "user" | "assistant";

@@ -1,5 +1,10 @@
 import { createLogger } from "./log";
-import type { Thread } from "./types";
+import {
+  DEFAULT_UI_APPEARANCE,
+  type HighlightStyle,
+  type Thread,
+  type UiAppearance,
+} from "./types";
 
 const log = createLogger("storage");
 
@@ -147,6 +152,66 @@ export async function migrateThreads(
 }
 
 const SIDEBAR_WIDTH_KEY = "ui:sidebarWidth";
+const UI_APPEARANCE_KEY = "ui:appearance";
+
+const HEX_COLOR_RE = /^#[0-9a-fA-F]{6}$/;
+
+function normalizeAppearance(raw: unknown): UiAppearance {
+  if (!raw || typeof raw !== "object") return { ...DEFAULT_UI_APPEARANCE };
+  const obj = raw as Partial<UiAppearance>;
+  const color =
+    typeof obj.highlightColor === "string" && HEX_COLOR_RE.test(obj.highlightColor)
+      ? obj.highlightColor.toLowerCase()
+      : DEFAULT_UI_APPEARANCE.highlightColor;
+  const style: HighlightStyle =
+    obj.highlightStyle === "underline" || obj.highlightStyle === "classic"
+      ? obj.highlightStyle
+      : DEFAULT_UI_APPEARANCE.highlightStyle;
+  return { highlightColor: color, highlightStyle: style };
+}
+
+/** Load highlight color/style prefs (falls back to defaults). */
+export async function loadUiAppearance(): Promise<UiAppearance> {
+  if (!isExtensionAlive()) return { ...DEFAULT_UI_APPEARANCE };
+  return new Promise((resolve) => {
+    try {
+      chrome.storage.local.get([UI_APPEARANCE_KEY], (result) => {
+        if (chrome.runtime.lastError) {
+          resolve({ ...DEFAULT_UI_APPEARANCE });
+          return;
+        }
+        resolve(normalizeAppearance(result[UI_APPEARANCE_KEY]));
+      });
+    } catch {
+      resolve({ ...DEFAULT_UI_APPEARANCE });
+    }
+  });
+}
+
+/** Persist highlight appearance prefs. */
+export async function saveUiAppearance(appearance: UiAppearance): Promise<void> {
+  if (!isExtensionAlive()) {
+    throw new Error(EXTENSION_RELOAD_MSG);
+  }
+  const normalized = normalizeAppearance(appearance);
+  return new Promise((resolve, reject) => {
+    try {
+      chrome.storage.local.set({ [UI_APPEARANCE_KEY]: normalized }, () => {
+        if (chrome.runtime.lastError) {
+          reject(
+            asStorageError(
+              new Error(chrome.runtime.lastError.message || "appearance save failed")
+            )
+          );
+          return;
+        }
+        resolve();
+      });
+    } catch (err) {
+      reject(asStorageError(err));
+    }
+  });
+}
 
 /** Saved sidebar width in CSS px, or null if never set. */
 export function loadSidebarWidth(): Promise<number | null> {
