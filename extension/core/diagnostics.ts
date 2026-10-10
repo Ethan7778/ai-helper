@@ -1,4 +1,5 @@
 import { ASK_BUTTON_ID } from "./anchor";
+import { dockReport } from "./dock";
 import { BUILD_TIME, DEBUG, DEBUG_STORAGE_KEY } from "./log";
 import { HOST_ID } from "./sidebar";
 import { isExtensionAlive, summarizeStorage } from "./storage";
@@ -14,6 +15,7 @@ export interface DiagnosticsSources {
   getRegisteredMessageCount: () => number;
   getPendingCount: () => number;
   isSidebarMounted: () => boolean;
+  describeSidebar: () => Record<string, unknown>;
   isDead: () => boolean;
 }
 
@@ -106,6 +108,8 @@ async function collect(src: DiagnosticsSources): Promise<Record<string, unknown>
       highlightMarks: document.querySelectorAll("mark[data-thread-id]").length,
       ...(src.adapter.describeDom?.() ?? {}),
     },
+    dock: dockReport(),
+    sidebar: src.describeSidebar(),
     storage,
   };
 }

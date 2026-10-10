@@ -34,10 +34,18 @@ export function cleanChatGptText(text: string): string {
   // Any leftover Private Use Area glyphs
   out = out.replace(/[\uE000-\uF8FF]/g, "");
 
-  // Collapse odd spaces left by removals, keep intentional newlines
-  out = out.replace(/[^\S\n]+/g, " ");
-  out = out.replace(/ *\n */g, "\n");
-  out = out.replace(/\n{3,}/g, "\n\n");
+  // Collapse odd spaces left by removals, keep intentional newlines.
+  // Code fences keep their whitespace so indentation survives.
+  out = splitFences(out)
+    .map((seg) =>
+      seg.code
+        ? seg.raw
+        : seg.raw
+            .replace(/[^\S\n]+/g, " ")
+            .replace(/ *\n */g, "\n")
+            .replace(/\n{3,}/g, "\n\n")
+    )
+    .join("");
 
   return out.trim();
 }
@@ -77,6 +85,10 @@ function stripNamedJsonWidgets(text: string): string {
     ""
   );
 
+  // Bare widget names whose data was sent separately, e.g. a paragraph starting
+  // "image_group He couldn't play…". Only names that are never ordinary words.
+  out = out.replace(/(^|[^\w])(?:image_group|navlist)\b[^\S\n]*/gi, "$1");
+
   return out;
 }
 
@@ -114,30 +126,127 @@ function findMatching(
   return -1;
 }
 
+interface Segment {
+  raw: string;
+  code: boolean;
+}
+
+/** Split on ``` fences; an unclosed trailing fence (mid-stream) counts as code. */
+function splitFences(text: string): Segment[] {
+  const segments: Segment[] = [];
+  const re = /```[^\n]*(?:\n(?:[\s\S]*?\n)?```[^\n]*|[\s\S]*$)/g;
+  let last = 0;
+  for (let m = re.exec(text); m; m = re.exec(text)) {
+    if (m.index > last) segments.push({ raw: text.slice(last, m.index), code: false });
+    segments.push({ raw: m[0], code: true });
+    last = m.index + m[0].length;
+    if (m[0].length === 0) re.lastIndex++;
+  }
+  if (last < text.length) segments.push({ raw: text.slice(last), code: false });
+  return segments;
+}
+
+/** Inline markdown on already-escaped text: `code`, **bold**, *italic*. */
+function formatInline(escaped: string): string {
+  const codes: string[] = [];
+  let html = escaped.replace(/`([^`\n]+)`/g, (_m, code: string) => {
+    codes.push(`<code>${code}</code>`);
+    return `\u0000${codes.length - 1}\u0000`;
+  });
+  html = html.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+  html = html.replace(/(^|[^*])\*(?!\*)(.+?)\*(?!\*)/g, "$1<em>$2</em>");
+  // Drop any stray ** that never closed (common mid-stream)
+  html = html.replace(/\*\*/g, "");
+  return html.replace(/\u0000(\d+)\u0000/g, (_m, i: string) => codes[Number(i)] ?? "");
+}
+
+function formatCodeBlock(raw: string): string {
+  const firstNl = raw.indexOf("\n");
+  const lang = (firstNl < 0 ? raw.slice(3) : raw.slice(3, firstNl)).trim();
+  let body = firstNl < 0 ? "" : raw.slice(firstNl + 1);
+  body = body.replace(/(?:^|\n)```[^\n]*$/, "");
+  const label = lang ? `<div class="code-lang">${escapeHtml(lang)}</div>` : "";
+  return `<div class="code-block">${label}<pre><code>${escapeHtml(body)}</code></pre></div>`;
+}
+
+type ListKind = "ul" | "ol";
+
+function formatProse(text: string): string {
+  const out: string[] = [];
+  let para: string[] = [];
+  let list: { kind: ListKind; items: string[] } | null = null;
+  let quote: string[] = [];
+
+  const flushPara = () => {
+    if (para.length) out.push(`<p>${para.join("<br>")}</p>`);
+    para = [];
+  };
+  const flushList = () => {
+    if (list) {
+      const items = list.items.map((li) => `<li>${li}</li>`).join("");
+      out.push(`<${list.kind}>${items}</${list.kind}>`);
+    }
+    list = null;
+  };
+  const flushQuote = () => {
+    if (quote.length) out.push(`<blockquote>${quote.join("<br>")}</blockquote>`);
+    quote = [];
+  };
+  const flushAll = () => {
+    flushPara();
+    flushList();
+    flushQuote();
+  };
+
+  for (const rawLine of text.split("\n")) {
+    const line = rawLine.trimEnd();
+    if (!line.trim()) {
+      flushAll();
+      continue;
+    }
+    const heading = /^\s*#{1,6}\s+(.*)$/.exec(line);
+    if (heading) {
+      flushAll();
+      out.push(`<p class="h">${formatInline(escapeHtml(heading[1]!))}</p>`);
+      continue;
+    }
+    const q = /^\s*>\s?(.*)$/.exec(line);
+    if (q) {
+      flushPara();
+      flushList();
+      quote.push(formatInline(escapeHtml(q[1]!)));
+      continue;
+    }
+    flushQuote();
+    const bullet = /^\s*[-*+]\s+(.*)$/.exec(line);
+    const numbered = /^\s*\d+[.)]\s+(.*)$/.exec(line);
+    if (bullet || numbered) {
+      const kind: ListKind = bullet ? "ul" : "ol";
+      flushPara();
+      if (list && list.kind !== kind) flushList();
+      if (!list) list = { kind, items: [] };
+      list.items.push(formatInline(escapeHtml((bullet ?? numbered)![1]!)));
+      continue;
+    }
+    if (list) {
+      flushList();
+    }
+    para.push(formatInline(escapeHtml(line.trim())));
+  }
+  flushAll();
+  return out.join("");
+}
+
 /**
- * Escape HTML then apply a tiny markdown subset for sidebar display.
+ * Escape HTML then apply a small markdown subset for sidebar display:
+ * paragraphs, headings, quotes, lists, code fences, inline code, bold, italic.
  */
 export function formatReplyHtml(text: string): string {
-  const cleaned = cleanChatGptText(text);
-  let html = escapeHtml(cleaned);
-
-  // Headings / blockquotes on real newlines first
-  html = html.replace(/(^|\n)#{1,6}\s+/g, "$1");
-  html = html.replace(/(^|\n)&gt;\s?/g, "$1");
-
-  // **bold**
-  html = html.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
-  // *italic* (avoid matching bold leftovers)
-  html = html.replace(/(^|[^*])\*(?!\*)(.+?)\*(?!\*)/g, "$1<em>$2</em>");
-  // Simple list lines: "- item" / "* item" at line start
-  html = html.replace(/(^|\n)(?:-|\*) (.+)/g, "$1• $2");
-  // Newlines → breaks
-  html = html.replace(/\n/g, "<br>");
-
-  // Drop any stray ** that never closed
-  html = html.replace(/\*\*/g, "");
-
-  return html;
+  // A streaming cut can land inside a ChatGPT citation token; hide the tail.
+  const cleaned = cleanChatGptText(text.replace(/\uE200[^\uE201]*$/, ""));
+  return splitFences(cleaned)
+    .map((seg) => (seg.code ? formatCodeBlock(seg.raw) : formatProse(seg.raw)))
+    .join("");
 }
 
 function escapeHtml(s: string): string {

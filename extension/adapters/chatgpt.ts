@@ -39,6 +39,14 @@ export function createChatGptAdapter(): SiteAdapter {
     // ChatGPT's selected-text overlay can replace the browser selection with a
     // tiny fragment; capture the drag from pointer coordinates instead.
     selectionStrategy: "pointer",
+    // The signed-in app shell is sized to the viewport, which ignores the
+    // narrowed <body>; its layout wrapper uses a generated "Layout-…" class.
+    dockFixups: [
+      'body :is([class^="Layout-"], [class*=" Layout-"]) { width: 100% !important; min-width: 0 !important; max-width: 100% !important; }',
+      "body .w-screen { width: 100% !important; }",
+      "body .max-w-screen { max-width: 100% !important; }",
+      "body .min-w-screen { min-width: 0 !important; }",
+    ],
     assistantSelectors: [
       MODERN_ASSISTANT_SELECTOR,
       '[data-message-author-role="assistant"]',

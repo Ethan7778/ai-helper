@@ -7,6 +7,11 @@ export interface DomAdapterConfig {
   siteId: string;
   /** How the Ask button should capture highlights on this site. */
   selectionStrategy?: SelectionStrategy;
+  /**
+   * Page CSS installed only while the sidebar is docked, for site chrome that
+   * still spans the full viewport. Use `var(--ai-helper-dock-w)` for the panel width.
+   */
+  dockFixups?: string[];
   /** Stable markers for an assistant turn, most stable first. */
   assistantSelectors: string[];
   /** Used only when none of `assistantSelectors` match (UI variants / A/B tests). */
@@ -91,6 +96,7 @@ export function createDomAdapter(config: DomAdapterConfig): SiteAdapter {
   const adapter: SiteAdapter = {
     siteId: config.siteId,
     selectionStrategy: config.selectionStrategy,
+    dockFixups: config.dockFixups,
 
     getConversationId(): string {
       return (

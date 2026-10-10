@@ -32,6 +32,8 @@ export interface SiteAdapter {
    * tiny fragment; use `"pointer"` there. Other sites keep `"native"`.
    */
   selectionStrategy?: SelectionStrategy;
+  /** Optional: extra page CSS so the site's fixed chrome respects the docked sidebar. */
+  dockFixups?: readonly string[];
   getConversationId(): string;
   getMessageContainers(): HTMLElement[];
   getMessageId(el: HTMLElement): string;

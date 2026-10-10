@@ -222,7 +222,7 @@ export async function bootEngine(adapter: SiteAdapter): Promise<() => void> {
       }
       return result;
     },
-  });
+  }, { dockFixups: adapter.dockFixups });
 
   sidebar.setThreads(threads);
 
@@ -375,6 +375,7 @@ export async function bootEngine(adapter: SiteAdapter): Promise<() => void> {
     getRegisteredMessageCount: () => messageEls.size,
     getPendingCount: () => pendingReady.size,
     isSidebarMounted: () => sidebar.isMounted(),
+    describeSidebar: () => sidebar.describe(),
     isDead: () => dead,
   });
 

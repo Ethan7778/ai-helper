@@ -138,6 +138,36 @@ export async function migrateThreads(
   return merged;
 }
 
+const SIDEBAR_WIDTH_KEY = "ui:sidebarWidth";
+
+/** Saved sidebar width in CSS px, or null if never set. */
+export function loadSidebarWidth(): Promise<number | null> {
+  if (!isExtensionAlive()) return Promise.resolve(null);
+  return new Promise((resolve) => {
+    try {
+      chrome.storage.local.get([SIDEBAR_WIDTH_KEY], (result) => {
+        const value = chrome.runtime.lastError ? null : result[SIDEBAR_WIDTH_KEY];
+        resolve(typeof value === "number" && Number.isFinite(value) ? value : null);
+      });
+    } catch {
+      resolve(null);
+    }
+  });
+}
+
+export function saveSidebarWidth(width: number): void {
+  if (!isExtensionAlive()) return;
+  try {
+    chrome.storage.local.set({ [SIDEBAR_WIDTH_KEY]: Math.round(width) }, () => {
+      if (chrome.runtime.lastError) {
+        log.warn("could not save sidebar width:", chrome.runtime.lastError.message);
+      }
+    });
+  } catch (err) {
+    log.warn("could not save sidebar width:", asStorageError(err).message);
+  }
+}
+
 export interface StorageSummary {
   bytesInUse: number | null;
   conversations: {

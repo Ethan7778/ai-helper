@@ -130,6 +130,13 @@ const geminiStream =
     "Here is a chart http://googleusercontent.com/image_generation_content/0 \nDone."
   );
   assert(cleaned === "Here is a chart\nDone.", `Gemini: media placeholder, got ${JSON.stringify(cleaned)}`);
+
+  const chips = gemini.cleanGeminiText(
+    'Odds favor Green Bay.\n<FollowUp label="Want more?" query="What are Jordan Love\'s stats?"/>'
+  );
+  assert(chips === "Odds favor Green Bay.", `Gemini: FollowUp chip, got ${JSON.stringify(chips)}`);
+  const partialChip = gemini.cleanGeminiText('Odds favor Green Bay.\n<FollowUp label="Want mo');
+  assert(partialChip === "Odds favor Green Bay.", `Gemini: partial chip, got ${JSON.stringify(partialChip)}`);
 }
 
 rmSync(dir, { recursive: true, force: true });

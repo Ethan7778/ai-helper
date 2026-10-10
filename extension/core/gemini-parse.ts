@@ -101,9 +101,15 @@ function findErrorCode(node: unknown, depth = 0): number | null {
   return null;
 }
 
-/** Drop Gemini citation markers and media placeholders from reply text. */
+/**
+ * Drop Gemini citation markers, media placeholders, and the web app's
+ * suggested-question chips (`<FollowUp label="…" query="…"/>`) from reply text.
+ */
 export function cleanGeminiText(text: string): string {
   return text
+    .replace(/<FollowUp\b[^>]*>(?:[\s\S]*?<\/FollowUp>)?/g, "")
+    // A chip still streaming in has no closing ">" yet.
+    .replace(/<FollowUp\b[^>]*$/, "")
     .replace(/\[cite(?:_start|_end)?(?::[^\]]*)?\]/g, "")
     .replace(/https?:\/\/googleusercontent\.com\/\S+/g, "")
     .replace(/[^\S\n]+\n/g, "\n")

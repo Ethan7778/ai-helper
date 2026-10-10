@@ -1,3 +1,4 @@
+import { pageRightEdge } from "./dock";
 import { rafThrottle } from "./dom";
 import { createLogger } from "./log";
 import type { Thread } from "./types";
@@ -649,7 +650,7 @@ export function attachSelectionHandler(
       Math.max(8, rect.bottom + 8)
     );
     const left = Math.min(
-      window.innerWidth - 160,
+      pageRightEdge() - 160,
       Math.max(8, rect.left)
     );
     el.style.top = `${top}px`;
