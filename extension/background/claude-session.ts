@@ -141,6 +141,7 @@ export async function completeViaClaudeSession(
       conversationExcerpt: req.conversationExcerpt,
       question: req.question,
       answerLength: req.answerLength,
+      summaryEnabled: req.summaryEnabled,
       siteName: "Claude",
     };
 

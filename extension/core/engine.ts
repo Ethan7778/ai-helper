@@ -22,9 +22,14 @@ import {
   saveUiAppearance,
   saveAnswerLength,
   ANSWER_LENGTH_KEY,
+  loadSummaryEnabled,
+  saveSummaryEnabled,
+  SUMMARY_ENABLED_KEY,
 } from "./storage";
 import type { SiteAdapter, Thread, UiAppearance, AnswerLength } from "./types";
 import { normalizeAnswerLength } from "./types";
+import { splitSummaryReply } from "./summary";
+import { installUnderlineLayer, scheduleUnderlineLayout } from "./underline";
 
 const log = createLogger("engine");
 
@@ -54,6 +59,8 @@ export async function bootEngine(adapter: SiteAdapter): Promise<() => void> {
   let threads: Thread[] = withReplies(loadedAtBoot);
   let appearance: UiAppearance = await loadUiAppearance();
   let answerLength: AnswerLength = await loadAnswerLength();
+  let summaryEnabled = await loadSummaryEnabled();
+  const disposeUnderlines = installUnderlineLayer();
   const messageEls = new Map<string, HTMLElement>();
   /** Messages still streaming; highlights are applied once they complete. */
   const pendingReady = new Map<HTMLElement, { messageId: string; since: number }>();
@@ -209,11 +216,12 @@ export async function bootEngine(adapter: SiteAdapter): Promise<() => void> {
     marks[0]!.scrollIntoView({ behavior: "smooth", block: "center" });
     for (const mark of marks) {
       if (appearance.highlightStyle === "underline") {
-        mark.style.backgroundSize = "100% 3px";
+        mark.style.setProperty("--ai-helper-underline-width", "3.5");
       } else {
         mark.style.background = hexToRgba(appearance.highlightColor, 0.7);
       }
     }
+    scheduleUnderlineLayout();
     window.setTimeout(() => {
       for (const mark of marks) {
         if (!mark.isConnected) continue;
@@ -223,6 +231,10 @@ export async function bootEngine(adapter: SiteAdapter): Promise<() => void> {
   };
 
   const sidebar = new Sidebar({
+    onSummaryChange: async (next) => {
+      await saveSummaryEnabled(next);
+      summaryEnabled = next;
+    },
     onAnswerLengthChange: async (next) => {
       await saveAnswerLength(next);
       answerLength = next;
@@ -294,6 +306,7 @@ export async function bootEngine(adapter: SiteAdapter): Promise<() => void> {
       if (idx < 0) return { ok: false, error: "Thread not found" };
 
       const current = threads[idx];
+      const includeSummary = summaryEnabled;
       threads[idx] = {
         ...current,
         replies: [
@@ -320,6 +333,7 @@ export async function bootEngine(adapter: SiteAdapter): Promise<() => void> {
           conversationExcerpt: conversationExcerpt(),
           question,
           answerLength,
+          summaryEnabled: includeSummary,
           messageId: current.messageId,
           threadId: current.id,
           sideConversationId: current.sideConversationId,
@@ -327,8 +341,11 @@ export async function bootEngine(adapter: SiteAdapter): Promise<() => void> {
           sideMeta: current.sideMeta,
           priorTurns: current.replies.map(({ role, text }) => ({ role, text })),
         },
-        onPartial
+        text => onPartial?.(splitSummaryReply(text, includeSummary).text)
       );
+
+      const answer = result.reply ? splitSummaryReply(result.reply, includeSummary) : undefined;
+      if (answer) result.reply = answer.text;
 
       if (result.ok && result.reply) {
         const i = threads.findIndex((t) => t.id === thread.id);
@@ -342,7 +359,7 @@ export async function bootEngine(adapter: SiteAdapter): Promise<() => void> {
             sideMeta: result.sideMeta ?? threads[i].sideMeta,
             replies: [
               ...threads[i].replies,
-              { role: "assistant", text: result.reply, ts: Date.now() },
+              { role: "assistant", text: result.reply, summary: answer?.summary, ts: Date.now() },
             ],
           };
           try {
@@ -362,14 +379,21 @@ export async function bootEngine(adapter: SiteAdapter): Promise<() => void> {
 
   sidebar.setAppearance(appearance);
   sidebar.setAnswerLength(answerLength);
+  sidebar.setSummaryEnabled(summaryEnabled);
   sidebar.setThreads(threads);
   const onPreferencesChanged = (
     changes: Record<string, chrome.storage.StorageChange>,
     areaName: string
   ) => {
-    if (areaName !== "local" || !changes[ANSWER_LENGTH_KEY]) return;
-    answerLength = normalizeAnswerLength(changes[ANSWER_LENGTH_KEY].newValue);
-    sidebar.setAnswerLength(answerLength);
+    if (areaName !== "local") return;
+    if (changes[ANSWER_LENGTH_KEY]) {
+      answerLength = normalizeAnswerLength(changes[ANSWER_LENGTH_KEY].newValue);
+      sidebar.setAnswerLength(answerLength);
+    }
+    if (changes[SUMMARY_ENABLED_KEY]) {
+      summaryEnabled = changes[SUMMARY_ENABLED_KEY].newValue === true;
+      sidebar.setSummaryEnabled(summaryEnabled);
+    }
   };
   chrome.storage.onChanged.addListener(onPreferencesChanged);
 
@@ -575,6 +599,8 @@ export async function bootEngine(adapter: SiteAdapter): Promise<() => void> {
     stopObserving();
     clearInterval(tick);
     unregisterDiagnostics();
+    disposeUnderlines();
+    sidebar.destroy();
     chrome.storage.onChanged.removeListener(onPreferencesChanged);
   };
 }

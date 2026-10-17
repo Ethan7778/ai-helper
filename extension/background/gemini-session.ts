@@ -231,6 +231,7 @@ export async function completeViaGeminiSession(
       conversationExcerpt: req.conversationExcerpt,
       question: req.question,
       answerLength: req.answerLength,
+      summaryEnabled: req.summaryEnabled,
       siteName: "Gemini",
     };
 

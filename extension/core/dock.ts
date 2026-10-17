@@ -26,6 +26,7 @@ const CAP_PROPS = ["width", "min-width", "max-width"] as const;
 const CAP_SCAN_DEPTH = 12;
 
 let dockedWidth = 0;
+let visibleSidebarWidth = 0;
 
 export function clampSidebarWidth(width: number): number {
   const max = Math.max(
@@ -50,7 +51,7 @@ export function isDocked(): boolean {
 
 /** Right edge of the page area not covered by the sidebar, in viewport px. */
 export function pageRightEdge(): number {
-  return window.innerWidth - dockedWidth;
+  return window.innerWidth - visibleSidebarWidth;
 }
 
 function dockCss(width: number, fixups: readonly string[]): string {
@@ -89,6 +90,8 @@ export class Dock {
   apply(open: boolean, width: number): boolean {
     const widthChanged = width !== this.width;
     this.width = width;
+    // The floating Ask button must also avoid a sidebar that overlays a narrow page.
+    visibleSidebarWidth = open ? Math.min(width, window.innerWidth) : 0;
     const shouldDock = open && canDock();
     if (shouldDock) {
       if (!this.docked || widthChanged) this.install();

@@ -157,6 +157,31 @@ export async function migrateThreads(
 const SIDEBAR_WIDTH_KEY = "ui:sidebarWidth";
 const UI_APPEARANCE_KEY = "ui:appearance";
 export const ANSWER_LENGTH_KEY = "ui:answerLength";
+export const SUMMARY_ENABLED_KEY = "ui:summaryEnabled";
+
+export async function loadSummaryEnabled(): Promise<boolean> {
+  if (!isExtensionAlive()) return false;
+  return new Promise(resolve => {
+    try {
+      chrome.storage.local.get([SUMMARY_ENABLED_KEY], result => {
+        resolve(!chrome.runtime.lastError && result[SUMMARY_ENABLED_KEY] === true);
+      });
+    } catch { resolve(false); }
+  });
+}
+
+export async function saveSummaryEnabled(enabled: boolean): Promise<void> {
+  if (!isExtensionAlive()) throw new Error(EXTENSION_RELOAD_MSG);
+  return new Promise((resolve, reject) => {
+    try {
+      chrome.storage.local.set({ [SUMMARY_ENABLED_KEY]: enabled === true }, () => {
+        if (chrome.runtime.lastError) {
+          reject(asStorageError(new Error(chrome.runtime.lastError.message || "summary setting save failed")));
+        } else { resolve(); }
+      });
+    } catch (err) { reject(asStorageError(err)); }
+  });
+}
 
 /** Kept separate from appearance so existing highlight preferences are preserved. */
 export async function loadAnswerLength(): Promise<AnswerLength> {
