@@ -119,7 +119,9 @@ function filterNonOverlapping(
       continue;
     }
     if (t.anchorStart < lastEnd) {
-      log.warn(
+      // Existing saved ranges can overlap after a site's text is rematched.
+      // Keeping the first range is expected recovery, not an extension error.
+      log.debug(
         "Skipping overlapping highlight",
         t.id,
         `(${t.anchorStart}-${t.anchorEnd} overlaps prior end ${lastEnd})`
@@ -712,9 +714,10 @@ function createAskButton(
     e.preventDefault();
     e.stopPropagation();
     const anchor = getPending();
-    if (anchor) onAsk(anchor);
     hide();
     window.getSelection()?.removeAllRanges();
+    // Selection cleanup must finish before the sidebar focuses its composer.
+    if (anchor) onAsk(anchor);
   });
   return button;
 }

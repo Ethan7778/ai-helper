@@ -338,6 +338,54 @@ const STYLES = `
   color: var(--danger);
   background: var(--danger-bg);
 }
+.delete-confirmation {
+  width: min(360px, calc(100vw - 32px));
+  padding: 22px;
+  border: 1px solid var(--border-strong);
+  border-radius: 14px;
+  background: var(--bg-elevated);
+  color: var(--text);
+  font: 14px/1.5 ${FONT_STACK};
+  box-shadow: 0 12px 40px var(--shadow);
+}
+.delete-confirmation::backdrop {
+  background: rgba(0, 0, 0, 0.4);
+}
+.delete-confirmation h2 {
+  margin: 0 0 8px;
+  font-size: 18px;
+}
+.delete-confirmation p {
+  margin: 0;
+  color: var(--text-secondary);
+}
+.delete-confirmation-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 20px;
+}
+.delete-confirmation button {
+  padding: 8px 14px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--bg-muted);
+  color: var(--text);
+  font: 600 13px/1.4 ${FONT_STACK};
+  cursor: pointer;
+}
+.delete-confirmation button:hover {
+  background: var(--bg-hover);
+}
+.delete-confirmation button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.delete-confirmation .confirm-delete {
+  background: var(--danger-bg);
+  color: var(--danger);
+  border-color: var(--danger);
+}
 .reply-summary {
   margin-top: 14px;
   padding-top: 10px;
@@ -737,10 +785,18 @@ export class Sidebar {
   private summaryEnabled = false;
   private summarySaving = false;
   private summaryError = "";
+  private dismissDeleteConfirmation: (() => void) | null = null;
+  private composerFocusRequest = 0;
+  private readonly cancelComposerFocus = () => { this.composerFocusRequest++; };
   private readonly onResize = () => this.applyLayout();
   private readonly onEscape = (event: KeyboardEvent) => {
     if (event.key !== "Escape" || event.isComposing || this.collapsed) return;
     event.preventDefault();
+    if (this.dismissDeleteConfirmation) {
+      event.stopImmediatePropagation();
+      this.dismissDeleteConfirmation();
+      return;
+    }
     this.setCollapsed(true);
     this.fab.focus({ preventScroll: true });
   };
@@ -794,6 +850,7 @@ export class Sidebar {
     window.addEventListener("resize", this.onResize);
     // The window input guard forwards textarea keys through SIDEBAR_KEY_EVENT.
     window.addEventListener("keydown", this.onEscape, true);
+    window.addEventListener("pointerdown", this.cancelComposerFocus, true);
   }
 
   /** Re-append the host if the page's own rendering removed it. */
@@ -809,6 +866,9 @@ export class Sidebar {
   }
 
   destroy(): void {
+    this.cancelComposerFocus();
+    window.removeEventListener("pointerdown", this.cancelComposerFocus, true);
+    this.dismissDeleteConfirmation?.();
     window.removeEventListener("resize", this.onResize);
     window.removeEventListener("keydown", this.onEscape, true);
     this.dock.apply(false, this.width);
@@ -847,13 +907,23 @@ export class Sidebar {
 
   private focusComposer(): void {
     const id = this.openId;
+    const request = ++this.composerFocusRequest;
     const focus = () => {
-      if (this.collapsed || this.settingsOpen || this.openId !== id || !id) return;
+      if (request !== this.composerFocusRequest || !this.host.isConnected ||
+          this.collapsed || this.settingsOpen || this.dismissDeleteConfirmation ||
+          this.openId !== id || !id) return;
       const input = this.composerFor(id);
-      if (input && !input.readOnly) input.focus({ preventScroll: true });
+      if (input && !input.readOnly && this.shadow.activeElement !== input) {
+        input.focus({ preventScroll: true });
+      }
     };
     focus();
     requestAnimationFrame(focus);
+    // Host click handlers and the panel's 200ms opening animation can take
+    // focus back after the first frame. Recheck once each has settled, unless
+    // the user has clicked somewhere else or opened a confirmation dialog.
+    window.setTimeout(focus, 0);
+    window.setTimeout(focus, 250);
   }
 
   private applyAppearanceVars(): void {
@@ -1471,20 +1541,65 @@ export class Sidebar {
     deleteBtn.className = "icon-btn delete-thread";
     deleteBtn.title = "Delete thread";
     deleteBtn.setAttribute("aria-label", "Delete thread");
+    deleteBtn.setAttribute("aria-haspopup", "dialog");
     setHtml(deleteBtn, TRASH_ICON);
     deleteBtn.addEventListener("click", (e) => {
       e.preventDefault();
       e.stopPropagation();
-      this.drafts.delete(thread.id);
-      this.errors.delete(thread.id);
-      this.partials.delete(thread.id);
-      this.sending.delete(thread.id);
-      this.sendStarted.delete(thread.id);
-      if (this.activeId === thread.id) this.activeId = null;
-      if (this.openId === thread.id) this.openId = null;
-      void this.callbacks.onDeleteThread(thread.id);
+      this.confirmDeleteThread(thread, deleteBtn);
     });
     return deleteBtn;
+  }
+
+  private confirmDeleteThread(thread: Thread, trigger: HTMLButtonElement): void {
+    if (this.dismissDeleteConfirmation) return;
+    this.cancelComposerFocus();
+    const dialog = document.createElement("dialog");
+    dialog.className = "delete-confirmation";
+    dialog.setAttribute("role", "alertdialog");
+    dialog.setAttribute("aria-labelledby", "delete-confirmation-title");
+    dialog.setAttribute("aria-describedby", "delete-confirmation-description");
+    setHtml(dialog, `
+      <h2 id="delete-confirmation-title">Delete thread?</h2>
+      <p id="delete-confirmation-description">Are you sure you want to delete this thread and its highlight? This can't be undone.</p>
+      <div class="delete-confirmation-actions">
+        <button type="button" class="cancel-delete" autofocus>Cancel</button>
+        <button type="button" class="confirm-delete">Delete thread</button>
+      </div>
+    `);
+
+    const finish = (confirmed: boolean) => {
+      if (!this.dismissDeleteConfirmation) return;
+      this.dismissDeleteConfirmation = null;
+      dialog.close();
+      dialog.remove();
+      if (confirmed && this.threads.some(t => t.id === thread.id)) {
+        this.drafts.delete(thread.id);
+        this.errors.delete(thread.id);
+        this.partials.delete(thread.id);
+        this.sending.delete(thread.id);
+        this.sendStarted.delete(thread.id);
+        if (this.activeId === thread.id) this.activeId = null;
+        if (this.openId === thread.id) this.openId = null;
+        void this.callbacks.onDeleteThread(thread.id);
+      }
+      // A streamed reply may have rebuilt the view while the dialog was open.
+      const focusTarget = !confirmed && trigger.isConnected
+        ? trigger
+        : !confirmed
+          ? this.shadow.querySelector<HTMLButtonElement>(`[data-thread-id="${CSS.escape(thread.id)}"] .delete-thread`)
+          : this.viewEl.querySelector<HTMLElement>(".row, .icon-btn");
+      (focusTarget ?? this.fab).focus({ preventScroll: true });
+    };
+    this.dismissDeleteConfirmation = () => finish(false);
+    dialog.querySelector(".cancel-delete")!.addEventListener("click", () => finish(false));
+    dialog.querySelector(".confirm-delete")!.addEventListener("click", () => finish(true));
+    dialog.addEventListener("cancel", event => {
+      event.preventDefault();
+      finish(false);
+    });
+    this.shadow.appendChild(dialog);
+    dialog.showModal();
   }
 
   private buildThreadView(thread: Thread): HTMLElement {
@@ -1519,6 +1634,7 @@ export class Sidebar {
       this.openQuote = !this.openQuote;
       quote.classList.toggle("open", this.openQuote);
       this.callbacks.onFocusThread(thread.id);
+      this.focusComposer();
     });
     view.appendChild(quote);
 
@@ -1662,6 +1778,7 @@ export class Sidebar {
 
     send.addEventListener("click", () => void doSend());
     const onKeyDown = (e: KeyboardEvent) => {
+      this.cancelComposerFocus();
       if (e.key === "Escape") { this.onEscape(e); return; }
       // Shift+Enter inserts a newline; Enter during IME composition confirms text.
       if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {

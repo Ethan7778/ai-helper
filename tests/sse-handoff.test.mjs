@@ -53,6 +53,21 @@ test("detects handoff even when a buffered partial reply is present", () => {
   assert.equal(parsed.handedOff, true);
   assert.equal(parsed.topicId, "conversation-turn-partial1");
   assert.equal(parsed.conversationId, "conv-partial");
+  assert.equal(parsed.finished, false);
+});
+
+test("final channel does not mean an assistant message has finished", () => {
+  const parsed = parseConversationSseText('data: {"message":{"id":"m1","author":{"role":"assistant"},"channel":"final","status":"in_progress","content":{"parts":["Still writing"]}}}\n');
+  assert.equal(parsed.finished, false);
+});
+
+test("recognizes explicit completion in batched status patches", () => {
+  const parsed = parseConversationSseText([
+    'data: {"message":{"id":"m1","author":{"role":"assistant"},"content":{"parts":["Full answer"]}}}',
+    'data: {"o":"patch","v":[{"p":"/message/status","o":"replace","v":"finished_successfully"}]}',
+  ].join('\n'));
+  assert.equal(parsed.reply, 'Full answer');
+  assert.equal(parsed.finished, true);
 });
 
 test("detects resume_conversation_token handoff and conversation id", () => {

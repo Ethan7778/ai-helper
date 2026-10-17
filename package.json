@@ -1,6 +1,6 @@
 {
   "name": "ai-helper",
-  "version": "0.2.8",
+  "version": "0.2.11",
   "private": true,
   "description": "Highlight-to-thread Chrome extension for AI chat sites",
   "scripts": {
@@ -8,7 +8,9 @@
     "build": "node esbuild.config.mjs",
     "watch": "node esbuild.config.mjs --watch",
     "test:sse": "node tests/sse-handoff.test.mjs",
-    "test:streams": "node tests/stream-parse.test.mjs"
+    "test:chatgpt-stream": "node tests/chatgpt-stream.test.mjs",
+    "test:streams": "node tests/stream-parse.test.mjs",
+    "test:browser": "node tests/sidebar-browser.test.mjs"
   },
   "devDependencies": {
     "@types/chrome": "^0.0.268",

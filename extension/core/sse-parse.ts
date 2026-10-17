@@ -12,6 +12,8 @@ export interface SseParseResult {
   resumeToken?: string;
   /** True when ChatGPT handed the turn off to WS / resume SSE (may still have a buffered partial). */
   handedOff: boolean;
+  /** The answer message or stream explicitly finished, rather than just closing. */
+  finished: boolean;
   eventTypes: string[];
 }
 
@@ -37,24 +39,35 @@ export function parseConversationSseText(text: string): SseParseResult {
   let lastPath = "";
   let lastOp = "append";
   let handedOff = false;
+  let finished = false;
   const eventTypes: string[] = [];
 
   const applyAssistantMessage = (msg: {
     id?: string;
     author?: { role?: string };
     content?: { parts?: unknown[] };
+    status?: string;
+    channel?: string;
   }) => {
     if (msg?.author?.role !== "assistant") return;
+    if (msg.channel === "analysis" || msg.channel === "commentary") return;
+    if (msg.id && msg.id !== messageId) finished = false;
     const chunk = extractTextFromMessage(msg);
     if (chunk) reply = chunk;
     if (msg.id) messageId = msg.id;
+    if (msg.status) finished = msg.status === "finished_successfully";
   };
 
   for (const rawLine of text.split(/\r?\n/)) {
     const line = rawLine.trim();
     if (!line.startsWith("data:")) continue;
     const payload = line.slice(5).trim();
-    if (!payload || payload === "[DONE]" || payload === "v1") continue;
+    if (!payload || payload === "v1") continue;
+    if (payload === "[DONE]") {
+      // During handoff [DONE] ends only the HTTP transport, not the answer.
+      if (!handedOff) finished = true;
+      continue;
+    }
 
     let event: Record<string, unknown>;
     try {
@@ -65,6 +78,7 @@ export function parseConversationSseText(text: string): SseParseResult {
 
     if (typeof event.type === "string") {
       eventTypes.push(event.type);
+      if (event.type === "message_stream_complete") finished = true;
     }
 
     if (typeof event.conversation_id === "string") {
@@ -124,6 +138,9 @@ export function parseConversationSseText(text: string): SseParseResult {
     const o = typeof event.o === "string" ? event.o : undefined;
     if (p !== undefined) lastPath = p;
     if (o !== undefined) lastOp = o;
+    if (p === "/message/status" && typeof v === "string") {
+      finished = v === "finished_successfully";
+    }
 
     if (v && typeof v === "object" && !Array.isArray(v)) {
       const nested = v as {
@@ -155,6 +172,9 @@ export function parseConversationSseText(text: string): SseParseResult {
       for (const sub of v) {
         if (!sub || typeof sub !== "object") continue;
         const sp = sub as { p?: string; o?: string; v?: unknown };
+        if (sp.p === "/message/status" && typeof sp.v === "string") {
+          finished = sp.v === "finished_successfully";
+        }
         if (typeof sp.v === "string" && (sp.p || "").includes("parts")) {
           if (sp.o === "append") reply += sp.v;
           else if (sp.o === "replace" || sp.o === "add") reply = sp.v;
@@ -201,6 +221,7 @@ export function parseConversationSseText(text: string): SseParseResult {
     // True whenever ChatGPT handed the turn off — even if a buffered partial
     // already arrived inline. Callers must recover via the topic when set.
     handedOff,
+    finished,
     eventTypes,
   };
 }

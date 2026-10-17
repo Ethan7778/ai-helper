@@ -1,6 +1,10 @@
 # Chrome Web Store — publish checklist
 
-Use this when submitting **AI Helper — Highlight to Thread**.
+Use this when submitting **ai chat threads**.
+
+## Rename the existing extension
+
+The store title comes from `name` in `extension/manifest.json`. Release a new package through the existing listing to update the name in Chrome and the store after review. In the Developer Dashboard's **Store listing** tab, also update the detailed description below to use ai chat threads. Publish the updated privacy policy at its existing URL. Keep using the existing extension ID and listing.
 
 ## Package ready in this repo
 
@@ -36,7 +40,7 @@ Highlight text in ChatGPT, Claude, or Gemini and ask follow-ups in a sidebar thr
 ### Detailed description
 
 ```
-AI Helper lets you highlight any part of an assistant reply on ChatGPT, Claude, or Gemini and open a focused sidebar thread about just that snippet.
+ai chat threads lets you highlight any part of an assistant reply on ChatGPT, Claude, or Gemini and open a focused sidebar thread about just that snippet.
 
 How it works
 • Select text in a reply and click “Ask about this”
@@ -50,7 +54,7 @@ Supported sites
 • claude.ai
 • gemini.google.com
 
-No API keys. No separate AI Helper account. Your questions are handled through the chat site you already use.
+No API keys. No separate ai chat threads account. Your questions are handled through the chat site you already use.
 
 Notes
 • This is an unofficial helper that talks to each site the same way your browser session does. Site changes can break it until we update.
@@ -94,5 +98,5 @@ Save them under `docs/store-screenshots/` (create the folder) before uploading �
 2. Set visibility (Public / Unlisted / Private)  
 3. Submit for review  
 
-First review often takes several days. If they ask about host permissions or how answers are generated, use the privacy policy wording: answers go through the user’s logged-in session on those three sites; nothing is sent to an AI Helper server.
+First review often takes several days. If they ask about host permissions or how answers are generated, use the privacy policy wording: answers go through the user’s logged-in session on those three sites; nothing is sent to an ai chat threads server.
 

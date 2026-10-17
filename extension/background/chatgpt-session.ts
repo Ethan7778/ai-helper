@@ -298,13 +298,7 @@ function collectEncodedSseFromWsFrame(frame: unknown): string[] {
     }
   };
 
-  // Prefer catchups on reply frames.
-  if (f.type === "reply" && f.reply && typeof f.reply === "object") {
-    const reply = f.reply as { catchups?: unknown[] };
-    if (Array.isArray(reply.catchups)) {
-      for (const cu of reply.catchups) walk(cu);
-    }
-  }
+  // Walk catchups only once; replaying append deltas duplicates answer text.
   walk(f);
   return out;
 }
@@ -313,12 +307,13 @@ function collectEncodedSseFromWsFrame(frame: unknown): string[] {
  * Subscribe to the turn topic over ChatGPT's user WebSocket and reassemble
  * the assistant reply from encoded SSE items.
  */
-async function recoverViaWebSocket(
+export async function recoverViaWebSocket(
   accessToken: string,
   userAgent: string,
   topicId: string,
   onPartial?: (text: string) => void,
-  timeoutMs = 90_000
+  timeoutMs = 90_000,
+  initialSse = ""
 ): Promise<{ reply: string; messageId?: string; conversationId?: string }> {
   const wsUrl = await getChatGptWebSocketUrl(accessToken, userAgent);
   let host = wsUrl;
@@ -336,11 +331,12 @@ async function recoverViaWebSocket(
     let reply = "";
     let messageId: string | undefined;
     let conversationId: string | undefined;
-    let sseBuffer = "";
+    // A resumed stream may contain only append deltas for the HTTP prefix.
+    let sseBuffer = initialSse;
     let cmdId = 4;
     let framesSeen = 0;
     let encodedSeen = 0;
-    let sawComplete = false;
+    let timer: ReturnType<typeof setTimeout>;
 
     const emit = (text: string) => {
       if (!text.trim()) return;
@@ -351,6 +347,7 @@ async function recoverViaWebSocket(
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      clearTimeout(hardTimer);
       try {
         ws.close();
       } catch {
@@ -371,24 +368,15 @@ async function recoverViaWebSocket(
       }
     };
 
-    const timer = setTimeout(() => {
-      if (reply.trim() && sawComplete) {
-        finish(true);
-      } else if (reply.trim()) {
-        log.warn(
-          `WebSocket handoff timed out with incomplete reply ` +
-            `(${reply.length} chars, frames=${framesSeen}, encoded=${encodedSeen}); keeping partial`
-        );
-        finish(true);
-      } else {
-        finish(
-          false,
-          `WebSocket handoff timed out (frames=${framesSeen}, encoded=${encodedSeen})`
-        );
-      }
-    }, timeoutMs);
-
     const ws = new WebSocket(wsUrl);
+    const incomplete = "ChatGPT's reply was interrupted before it finished. Please try again.";
+    const resetIdleTimer = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => finish(false, incomplete), timeoutMs);
+    };
+    // Allow long answers while text is still arriving, with a finite ceiling.
+    const hardTimer = setTimeout(() => finish(false, incomplete), 5 * 60_000);
+    resetIdleTimer();
 
     ws.onopen = () => {
       log.debug(`WebSocket open — subscribing to ${topicId}`);
@@ -421,17 +409,12 @@ async function recoverViaWebSocket(
         `WebSocket closed code=${ev.code} reason=${ev.reason || "none"} frames=${framesSeen} encoded=${encodedSeen}`
       );
       if (!settled) {
-        if (reply.trim()) finish(true);
-        else {
-          finish(
-            false,
-            `WebSocket closed before reply (code=${ev.code}, frames=${framesSeen}, encoded=${encodedSeen})`
-          );
-        }
+        finish(false, incomplete);
       }
     };
 
     ws.onmessage = (ev) => {
+      if (settled) return;
       let frames: unknown[] = [];
       try {
         const parsed = JSON.parse(String(ev.data));
@@ -461,28 +444,35 @@ async function recoverViaWebSocket(
           if (parsed.conversationId) conversationId = parsed.conversationId;
           if (parsed.messageId) messageId = parsed.messageId;
           if (parsed.reply) {
+            if (parsed.reply !== reply) resetIdleTimer();
             reply = parsed.reply;
             emit(reply);
           }
           const streamDone =
-            encoded.includes("[DONE]") ||
-            parsed.eventTypes.includes("message_stream_complete");
+            /(?:^|\n)data:\s*\[DONE\]\s*(?:\n|$)/.test(encoded) ||
+            parsed.finished;
           if (streamDone && reply.trim()) {
-            sawComplete = true;
             finish(true);
             return;
           }
         }
 
         const direct = extractAssistantFromUnknownFrame(frame);
-        if (direct?.text) {
-          if (direct.text.length >= reply.length) {
+        if (direct) {
+          if (direct.text && (direct.finished || direct.text.length >= reply.length)) {
+            if (direct.text !== reply) resetIdleTimer();
             reply = direct.text;
+            // Subsequent encoded append deltas can continue a direct snapshot.
+            sseBuffer += `\ndata: ${JSON.stringify({ message: {
+              id: direct.messageId,
+              author: { role: "assistant" },
+              content: { parts: [reply] },
+              status: direct.finished ? "finished_successfully" : "in_progress",
+            } })}\n`;
             emit(reply);
           }
           if (direct.messageId) messageId = direct.messageId;
           if (direct.finished && reply.trim()) {
-            sawComplete = true;
             finish(true);
             return;
           }
@@ -513,7 +503,7 @@ function extractAssistantFromUnknownFrame(
         content?: unknown;
         channel?: string;
       };
-      if (msg.author?.role === "assistant") {
+      if (msg.author?.role === "assistant" && msg.channel !== "analysis" && msg.channel !== "commentary") {
         const text = (() => {
           const content = msg.content;
           if (!content || typeof content !== "object") return "";
@@ -523,12 +513,11 @@ function extractAssistantFromUnknownFrame(
             .filter((p): p is string => typeof p === "string")
             .join("");
         })();
-        if (text.trim()) {
+        if (text.trim() || msg.status === "finished_successfully") {
           return {
             text,
             messageId: msg.id,
-            finished:
-              msg.status === "finished_successfully" || msg.channel === "final",
+            finished: msg.status === "finished_successfully",
           };
         }
       }
@@ -540,7 +529,7 @@ function extractAssistantFromUnknownFrame(
   return null;
 }
 
-async function parseConversationStream(
+export async function parseConversationStream(
   res: Response,
   accessToken: string,
   userAgent: string,
@@ -597,18 +586,6 @@ async function parseConversationStream(
   // incomplete until WS recovery — returning early here truncates mid-sentence.
   if (parsed.handedOff || parsed.topicId) {
     if (!parsed.topicId) {
-      if (parsed.reply.trim()) {
-        log.warn(
-          "Handoff without topic id; keeping buffered SSE partial " +
-            `(${parsed.reply.length} chars)`
-        );
-        emit(parsed.reply);
-        return {
-          reply: parsed.reply,
-          conversationId: parsed.conversationId,
-          messageId: parsed.messageId,
-        };
-      }
       log.error(
         `Empty SSE with no topic to resume; head=${text.slice(0, 400)}`
       );
@@ -631,12 +608,11 @@ async function parseConversationStream(
         accessToken,
         userAgent,
         parsed.topicId,
-        onPartial
+        onPartial,
+        90_000,
+        text
       );
-      const reply =
-        recovered.reply.length >= parsed.reply.length
-          ? recovered.reply
-          : parsed.reply;
+      const reply = recovered.reply;
       log.debug(
         `Handoff recovered via websocket (sse=${parsed.reply.length}, ws=${recovered.reply.length}, using=${reply.length})`
       );
@@ -647,18 +623,6 @@ async function parseConversationStream(
         messageId: recovered.messageId || parsed.messageId,
       };
     } catch (err) {
-      if (parsed.reply.trim()) {
-        log.warn(
-          `Handoff recovery failed; using buffered SSE partial (${parsed.reply.length} chars):`,
-          err instanceof Error ? err.message : err
-        );
-        emit(parsed.reply);
-        return {
-          reply: parsed.reply,
-          conversationId: parsed.conversationId,
-          messageId: parsed.messageId,
-        };
-      }
       throw new Error(
         `Handoff recovery failed: ${err instanceof Error ? err.message : String(err)}`
       );
@@ -666,6 +630,9 @@ async function parseConversationStream(
   }
 
   if (parsed.reply.trim()) {
+    if (!parsed.finished) {
+      throw new Error("ChatGPT's reply was interrupted before it finished. Please try again.");
+    }
     emit(parsed.reply);
     return {
       reply: parsed.reply,

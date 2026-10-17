@@ -2,7 +2,7 @@
 
 Pushing to `main` runs `.github/workflows/publish-extension.yml`. The workflow installs dependencies, checks types, runs tests, builds the extension, and packages the contents of `extension/dist`. Source maps are excluded from the store ZIP.
 
-It authenticates through Google Workload Identity Federation and submits the package to the existing [AI Helper store listing](https://chromewebstore.google.com/detail/anafheflkkjibeckbafcmikiecgnpmdj). No GitHub secrets or JSON keys are required with this configuration.
+It authenticates through Google Workload Identity Federation and submits the package to the existing [ai chat threads store listing](https://chromewebstore.google.com/detail/anafheflkkjibeckbafcmikiecgnpmdj). No GitHub secrets or JSON keys are required with this configuration.
 
 ## Release an update
 
