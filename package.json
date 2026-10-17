@@ -1,6 +1,6 @@
 {
   "name": "ai-helper",
-  "version": "0.2.7",
+  "version": "0.2.8",
   "private": true,
   "description": "Highlight-to-thread Chrome extension for AI chat sites",
   "scripts": {
