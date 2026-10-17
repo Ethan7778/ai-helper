@@ -2,6 +2,47 @@
 const SVG_NS = "http://www.w3.org/2000/svg";
 let requestLayout: (() => void) | undefined;
 
+const EDITOR_SELECTOR = 'textarea,[role="textbox"],[contenteditable="true"],[contenteditable="plaintext-only"],dialog[open],[role="dialog"],[aria-modal="true"]';
+const MARK_SELECTOR = 'mark[data-thread-id][data-ai-helper-underline]';
+
+/** Find the editor's painted panel, stopping before the conversation itself. */
+function editorPanel(editor: HTMLElement): HTMLElement {
+  let panel = editor;
+  const editorHeight = editor.getBoundingClientRect().height;
+  for (let parent = editor.parentElement; parent && parent !== document.body && parent !== document.documentElement; parent = parent.parentElement) {
+    if (parent.querySelector(MARK_SELECTOR)) break;
+    const style = getComputedStyle(parent);
+    const bounds = parent.getBoundingClientRect();
+    // A full-screen, transparent portal can contain a small bottom composer.
+    // Keep the mask on the actual panel instead of covering the whole page.
+    if (bounds.height > Math.max(editorHeight + 64, innerHeight * 0.65)) continue;
+    const painted = style.backgroundImage !== 'none' || (style.backgroundColor !== 'transparent' && !/rgba\([^)]*,\s*0\s*\)/.test(style.backgroundColor));
+    if (parent.tagName === 'FORM' || parent.tagName === 'FOOTER' || style.position === 'fixed' || style.position === 'sticky' || painted) panel = parent;
+  }
+  return panel;
+}
+
+function visiblePanelRects(editors: HTMLElement[]): { x: number; y: number; width: number; height: number }[] {
+  const panels = new Set<HTMLElement>();
+  for (const editor of editors) {
+    if (!editor.isConnected || editor.closest(MARK_SELECTOR) || editor.querySelector(MARK_SELECTOR)) continue;
+    const rect = editor.getBoundingClientRect();
+    const style = getComputedStyle(editor);
+    if (rect.width <= 0 || rect.height <= 0 || style.visibility === 'hidden' || style.visibility === 'collapse' || Number(style.opacity) === 0) continue;
+    const x = Math.min(innerWidth - 1, Math.max(0, rect.left + rect.width / 2));
+    const y = Math.min(innerHeight - 1, Math.max(0, rect.top + rect.height / 2));
+    const panel = editorPanel(editor);
+    const hit = document.elementFromPoint(x, y);
+    if (hit && panel.contains(hit)) panels.add(panel);
+  }
+  return Array.from(panels).flatMap(panel => {
+    const r = panel.getBoundingClientRect();
+    const x = Math.max(0, r.left), y = Math.max(0, r.top);
+    const width = Math.min(innerWidth, r.right) - x, height = Math.min(innerHeight, r.bottom) - y;
+    return width > 0 && height > 0 ? [{ x, y, width, height }] : [];
+  });
+}
+
 export function scheduleUnderlineLayout(): void { requestLayout?.(); }
 
 export function installUnderlineLayer(): () => void {
@@ -14,17 +55,23 @@ export function installUnderlineLayer(): () => void {
   let disposed = false;
   let marksDirty = true;
   let marks: HTMLElement[] = [];
+  let editors: HTMLElement[] = [];
+  let clippingParents = new WeakMap<HTMLElement, { element: HTMLElement; x: boolean; y: boolean }[]>();
+  const maskId = `ai-helper-underline-mask-${Math.random().toString(36).slice(2)}`;
   let previousGeometry = "";
   const render = () => {
     frame = 0;
     if (disposed || document.hidden) return;
     if (!layer.isConnected) document.documentElement.appendChild(layer);
     if (marksDirty) {
-      marks = Array.from(document.querySelectorAll<HTMLElement>("mark[data-thread-id][data-ai-helper-underline]"));
+      marks = Array.from(document.querySelectorAll<HTMLElement>(MARK_SELECTOR));
+      editors = Array.from(document.querySelectorAll<HTMLElement>(EDITOR_SELECTOR));
+      clippingParents = new WeakMap();
       marksDirty = false;
     }
     marks = marks.filter(mark => mark.isConnected && mark.hasAttribute("data-ai-helper-underline"));
     const threads = new Map<string, { color: string; width: number; rects: DOMRect[] }>();
+    const ancestorRects = new Map<HTMLElement, DOMRect>();
     for (const mark of marks) {
       const id = mark.dataset.threadId!;
       let group = threads.get(id);
@@ -33,8 +80,34 @@ export function installUnderlineLayer(): () => void {
         threads.set(id, group);
       }
       group.width = Math.max(group.width, Number(mark.style.getPropertyValue("--ai-helper-underline-width")) || 2);
+      let ancestors = clippingParents.get(mark);
+      if (!ancestors) {
+        ancestors = [];
+        for (let parent = mark.parentElement; parent; parent = parent.parentElement) {
+          const style = getComputedStyle(parent);
+          const x = /^(auto|scroll|hidden|clip)$/.test(style.overflowX);
+          const y = /^(auto|scroll|hidden|clip)$/.test(style.overflowY);
+          if ((x || y) && parent.clientWidth && parent.clientHeight) ancestors.push({ element: parent, x, y });
+        }
+        clippingParents.set(mark, ancestors);
+      }
+      let left = 0, right = innerWidth, top = 0, bottom = innerHeight;
+      for (const ancestor of ancestors) {
+        let r = ancestorRects.get(ancestor.element);
+        if (!r) { r = ancestor.element.getBoundingClientRect(); ancestorRects.set(ancestor.element, r); }
+        const scaleX = r.width / (ancestor.element.offsetWidth || r.width || 1);
+        const scaleY = r.height / (ancestor.element.offsetHeight || r.height || 1);
+        const x = r.left + ancestor.element.clientLeft * scaleX;
+        const y = r.top + ancestor.element.clientTop * scaleY;
+        if (ancestor.x) { left = Math.max(left, x); right = Math.min(right, x + ancestor.element.clientWidth * scaleX); }
+        if (ancestor.y) { top = Math.max(top, y); bottom = Math.min(bottom, y + ancestor.element.clientHeight * scaleY); }
+      }
       for (const rect of mark.getClientRects()) {
-        if (rect.width > 0 && rect.height > 0 && rect.bottom > 0 && rect.top < innerHeight) group.rects.push(rect);
+        const x = Math.max(left, rect.left), end = Math.min(right, rect.right);
+        const baseline = Math.round(rect.bottom) + 1;
+        if (end > x && rect.height > 0 && baseline - group.width / 2 >= top && baseline + group.width / 2 <= bottom) {
+          group.rects.push(new DOMRect(x, rect.top, end - x, rect.height));
+        }
       }
     }
     const geometry: { id: string; left: number; right: number; y: number; color: string; width: number }[] = [];
@@ -59,7 +132,8 @@ export function installUnderlineLayer(): () => void {
         }
       }
     }
-    const signature = JSON.stringify(geometry);
+    const panels = visiblePanelRects(editors);
+    const signature = JSON.stringify([geometry, panels, innerWidth, innerHeight]);
     if (signature !== previousGeometry) {
       previousGeometry = signature;
       const lines = geometry.map(item => {
@@ -71,7 +145,28 @@ export function installUnderlineLayer(): () => void {
         line.setAttribute("stroke-linecap", "round");
         return line;
       });
-      layer.replaceChildren(...lines);
+      if (panels.length) {
+        const defs = document.createElementNS(SVG_NS, 'defs');
+        const mask = document.createElementNS(SVG_NS, 'mask');
+        mask.id = maskId;
+        mask.setAttribute('maskUnits', 'userSpaceOnUse');
+        mask.setAttribute('x', '0'); mask.setAttribute('y', '0');
+        mask.setAttribute('width', String(innerWidth)); mask.setAttribute('height', String(innerHeight));
+        const allowed = document.createElementNS(SVG_NS, 'rect');
+        allowed.setAttribute('width', String(innerWidth)); allowed.setAttribute('height', String(innerHeight));
+        allowed.setAttribute('fill', 'white');
+        mask.appendChild(allowed);
+        for (const panel of panels) {
+          const hidden = document.createElementNS(SVG_NS, 'rect');
+          for (const [key, value] of Object.entries(panel)) hidden.setAttribute(key, String(value));
+          hidden.setAttribute('fill', 'black'); mask.appendChild(hidden);
+        }
+        defs.appendChild(mask);
+        const group = document.createElementNS(SVG_NS, 'g');
+        group.setAttribute('mask', `url(#${maskId})`);
+        group.append(...lines);
+        layer.replaceChildren(defs, group);
+      } else layer.replaceChildren(...lines);
     }
     // Transforms and centered/virtualized chat layouts can keep moving without
     // resizing <body> or mutating its children. Follow the marked text itself.
@@ -93,12 +188,12 @@ export function installUnderlineLayer(): () => void {
       return true;
     });
     if (!relevant.length) return;
-    if (relevant.some(record => record.type === "childList" || record.attributeName === "data-ai-helper-underline" || record.attributeName === "data-thread-id")) marksDirty = true;
+    marksDirty = true;
     schedule();
   });
   mutations.observe(document.documentElement, {
     childList: true, characterData: true, subtree: true,
-    attributes: true, attributeFilter: ["class", "style", "hidden", "data-ai-helper-underline", "data-thread-id"],
+    attributes: true, attributeFilter: ["class", "style", "hidden", "role", "aria-modal", "open", "contenteditable", "data-ai-helper-underline", "data-thread-id"],
   });
   const resize = new ResizeObserver(schedule);
   resize.observe(document.documentElement);
