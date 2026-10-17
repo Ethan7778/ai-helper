@@ -1,10 +1,14 @@
 # Chrome Web Store — publish checklist
 
-Use this when submitting **ai chat threads**.
+Use this when submitting **AI Chat Threads**.
 
 ## Rename the existing extension
 
-The store title comes from `name` in `extension/manifest.json`. Release a new package through the existing listing to update the name in Chrome and the store after review. In the Developer Dashboard's **Store listing** tab, also update the detailed description below to use ai chat threads. Publish the updated privacy policy at its existing URL. Keep using the existing extension ID and listing.
+The store title comes from `name` in `extension/manifest.json`. Release a new package through the existing listing to update the name in Chrome and the store after review. In the Developer Dashboard's **Store listing** tab, also update the detailed description below to use AI Chat Threads. Publish the updated privacy policy at its existing URL. Keep using the existing extension ID and listing.
+
+## Update the store icon
+
+In the existing item's **Store listing > Graphic assets > Store icon**, upload [`extension/icons/icon128.png`](../extension/icons/icon128.png). This is the supplied blue chat image resized to exactly **128 x 128 pixels**. Save the listing and submit the change for review. The automated package upload includes the browser icons, but does not replace this separately uploaded store listing image.
 
 ## Package ready in this repo
 
@@ -40,7 +44,7 @@ Highlight text in ChatGPT, Claude, or Gemini and ask follow-ups in a sidebar thr
 ### Detailed description
 
 ```
-ai chat threads lets you highlight any part of an assistant reply on ChatGPT, Claude, or Gemini and open a focused sidebar thread about just that snippet.
+AI Chat Threads lets you highlight any part of an assistant reply on ChatGPT, Claude, or Gemini and open a focused sidebar thread about just that snippet.
 
 How it works
 • Select text in a reply and click “Ask about this”
@@ -54,7 +58,7 @@ Supported sites
 • claude.ai
 • gemini.google.com
 
-No API keys. No separate ai chat threads account. Your questions are handled through the chat site you already use.
+No API keys. No separate AI Chat Threads account. Your questions are handled through the chat site you already use.
 
 Notes
 • This is an unofficial helper that talks to each site the same way your browser session does. Site changes can break it until we update.
@@ -98,5 +102,5 @@ Save them under `docs/store-screenshots/` (create the folder) before uploading �
 2. Set visibility (Public / Unlisted / Private)  
 3. Submit for review  
 
-First review often takes several days. If they ask about host permissions or how answers are generated, use the privacy policy wording: answers go through the user’s logged-in session on those three sites; nothing is sent to an ai chat threads server.
+First review often takes several days. If they ask about host permissions or how answers are generated, use the privacy policy wording: answers go through the user’s logged-in session on those three sites; nothing is sent to an AI Chat Threads server.
 

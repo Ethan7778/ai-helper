@@ -1,4 +1,4 @@
-# ai chat threads
+# AI Chat Threads
 
 Chrome extension (Manifest V3) that lets you highlight text in an AI reply, open a sidebar thread about just that snippet, and keep highlights two-way linked with thread cards. Threads persist per conversation via `chrome.storage.local`.
 
@@ -55,7 +55,7 @@ Requires Node 18+. Works the same on Windows, macOS, and Linux.
 
 ### Reload after changes
 
-1. `chrome://extensions` → click the **Reload** (circular arrow) icon on the ai chat threads card.
+1. `chrome://extensions` → click the **Reload** (circular arrow) icon on the AI Chat Threads card.
 2. Refresh every open ChatGPT, Claude, and Gemini tab. Old tabs keep running the previous copy and will log "Extension was reloaded — refresh this tab".
 
 ### Turn on debug logging
@@ -92,7 +92,7 @@ It prints a JSON report covering:
 
 If nothing prints, the content script isn't running. Check which folder was loaded, then reload the extension and the tab.
 
-If you switch the Console's context dropdown from `top` to **ai chat threads**, you can call `aiHelperDiagnostics()` directly instead.
+If you switch the Console's context dropdown from `top` to **AI Chat Threads**, you can call `aiHelperDiagnostics()` directly instead.
 
 ## Publish updates automatically
 
