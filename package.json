@@ -1,9 +1,10 @@
 {
   "name": "ai-helper",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "private": true,
   "description": "Highlight-to-thread Chrome extension for AI chat sites",
   "scripts": {
+    "release:bump": "node scripts/bump-extension-version.mjs",
     "build": "node esbuild.config.mjs",
     "watch": "node esbuild.config.mjs --watch",
     "test:sse": "node tests/sse-handoff.test.mjs",

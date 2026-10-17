@@ -3,3 +3,4 @@ extension/dist/
 extension/dist.zip
 *.log
 .DS_Store
+gha-creds-*.json

@@ -1,0 +1,56 @@
+name: Publish Chrome extension
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: chrome-web-store-publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.repository == 'Ethan7778/ai-helper' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Check types and tests
+        run: |
+          npx tsc --noEmit
+          npm run test:sse
+          npm run test:streams
+          node tests/text-clean.test.mjs
+          node tests/store-publish.test.mjs
+      - run: npm run build
+      - name: Package extension
+        working-directory: extension/dist
+        run: zip -r "$RUNNER_TEMP/ai-helper.zip" manifest.json content.js service-worker.js icons
+      - name: Authenticate to Google
+        id: auth
+        uses: google-github-actions/auth@v3
+        with:
+          project_id: adept-shade-487122-e9
+          workload_identity_provider: projects/189485354749/locations/global/workloadIdentityPools/github/providers/ai-helper
+          service_account: github-chrome-publisher@adept-shade-487122-e9.iam.gserviceaccount.com
+          token_format: access_token
+          access_token_scopes: https://www.googleapis.com/auth/chromewebstore
+          create_credentials_file: false
+          export_environment_variables: false
+      - name: Submit update to Chrome Web Store
+        env:
+          CWS_ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
+          CWS_ZIP_PATH: ${{ runner.temp }}/ai-helper.zip
+        run: node scripts/publish-extension.mjs

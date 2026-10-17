@@ -94,6 +94,10 @@ If nothing prints, the content script isn't running. Check which folder was load
 
 If you switch the Console's context dropdown from `top` to **AI Helper — Highlight to Thread**, you can call `aiHelperDiagnostics()` directly instead.
 
+## Publish updates automatically
+
+Pushes to `main` build, test, and submit new versions to the Chrome Web Store. Run `npm run release:bump` before committing a release. Google publishes the update after review. See [automatic release instructions](docs/AUTOMATED_RELEASES.md).
+
 ## Develop
 
 For rebuild-on-change: `npm run watch`, then click Reload on the extension card and refresh your chat tabs.
