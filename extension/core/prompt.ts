@@ -1,4 +1,5 @@
 import { normalizeAnswerLength, type AnswerLength } from "./types";
+import { SUMMARY_MIN_WORDS, SUMMARY_START, SUMMARY_END } from "./summary";
 
 const ANSWER_LENGTH_INSTRUCTIONS: Record<AnswerLength, string> = {
   short:
@@ -16,6 +17,7 @@ export function buildFollowUpPrompt(args: {
   conversationExcerpt: string;
   question: string;
   answerLength?: AnswerLength;
+  summaryEnabled?: boolean;
   /** Assistant the highlighted reply came from, e.g. "ChatGPT" or "Claude". */
   siteName?: string;
   /** Earlier turns of this thread, for when the side chat is started fresh. */
@@ -52,5 +54,16 @@ export function buildFollowUpPrompt(args: {
     ANSWER_LENGTH_INSTRUCTIONS[normalizeAnswerLength(args.answerLength)],
     "Use this preference for the current reply even if earlier replies used a different length. If the user's question explicitly requests a different length or format, follow that request."
   );
+  parts.push("", "## Summary preference for this reply");
+  if (args.summaryEnabled) {
+    parts.push(
+      `If the main answer contains at least ${SUMMARY_MIN_WORDS} words of prose (excluding code), append a summary after the complete answer.`,
+      "Use one to three bullet points, with one short, clear sentence per bullet. Summarize the key takeaways without adding new information.",
+      `Put the bullets between these exact markers, each on its own line: ${SUMMARY_START} and ${SUMMARY_END}.`,
+      `For an answer shorter than ${SUMMARY_MIN_WORDS} words, omit the summary and both markers. Do not lengthen the answer just to qualify for a summary.`
+    );
+  } else {
+    parts.push("Do not append a separate summary or summary markers, even if earlier replies included one.");
+  }
   return parts.join("\n");
 }

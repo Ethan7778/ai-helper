@@ -799,6 +799,7 @@ export async function completeViaChatGptSession(
       conversationExcerpt: req.conversationExcerpt,
       question: req.question,
       answerLength: req.answerLength,
+      summaryEnabled: req.summaryEnabled,
     });
 
     const sentinel = await fetchSentinelTokens(

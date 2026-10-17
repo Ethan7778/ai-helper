@@ -1,6 +1,7 @@
 import { pageRightEdge } from "./dock";
 import { rafThrottle } from "./dom";
 import { createLogger } from "./log";
+import { scheduleUnderlineLayout } from "./underline";
 import {
   DEFAULT_UI_APPEARANCE,
   type Thread,
@@ -18,20 +19,6 @@ export function hexToRgba(hex: string, alpha: number): string {
   return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 }
 
-/** A solid bar under each line of text, including the spaces between words. */
-function paintUnderline(mark: HTMLElement, color: string, thicknessPx: number): void {
-  mark.style.backgroundColor = "transparent";
-  mark.style.backgroundImage = `linear-gradient(${color}, ${color})`;
-  mark.style.backgroundRepeat = "no-repeat";
-  mark.style.backgroundSize = `100% ${thicknessPx}px`;
-  mark.style.backgroundPosition = "0 calc(100% - 1px)";
-  mark.style.setProperty("-webkit-box-decoration-break", "clone");
-  mark.style.boxDecorationBreak = "clone";
-  mark.style.textDecoration = "none";
-  mark.style.borderBottom = "none";
-  mark.style.padding = "0";
-}
-
 /** Apply classic fill or underline styling to a highlight mark. */
 export function styleHighlightMark(
   mark: HTMLElement,
@@ -47,15 +34,17 @@ export function styleHighlightMark(
   mark.style.boxShadow = "none";
   mark.style.letterSpacing = "inherit";
   mark.style.wordSpacing = "inherit";
+  mark.style.removeProperty("--ai-helper-underline-width");
+  mark.style.textDecoration = "none";
   if (appearance.highlightStyle === "underline") {
-    // A background bar stays continuous through spaces and reaches the last
-    // letter. text-decoration breaks between words and stops short at the end.
-    paintUnderline(mark, appearance.highlightColor, 2);
+    mark.style.background = "transparent";
+    mark.dataset.aiHelperUnderline = appearance.highlightColor;
   } else {
+    delete mark.dataset.aiHelperUnderline;
     mark.style.background = hexToRgba(appearance.highlightColor, 0.45);
     mark.style.borderRadius = "2px";
-    mark.style.textDecoration = "none";
   }
+  scheduleUnderlineLayout();
 }
 
 const log = createLogger("anchor");
@@ -769,6 +758,10 @@ export function attachSelectionHandler(
   let stickyReleaseSettling = false;
   let stickyReleaseTimer: ReturnType<typeof setTimeout> | null = null;
   let pointerSelectionStart: PointerSelectionStart | null = null;
+  let pointerStart: { x: number; y: number } | null = null;
+  let selectionGesture = false;
+  // A click dismisses the old range. Only a new drag or keyboard selection may reopen it.
+  let selectionDismissed = false;
 
   const hide = () => {
     document
@@ -783,7 +776,7 @@ export function attachSelectionHandler(
       Math.max(8, rect.bottom + 8)
     );
     const left = Math.min(
-      pageRightEdge() - 160,
+      Math.max(8, pageRightEdge() - 160),
       Math.max(8, rect.left)
     );
     el.style.top = `${top}px`;
@@ -818,7 +811,13 @@ export function attachSelectionHandler(
       );
       if (recovered) pending = recovered;
       return pending?.messageRoot.isConnected ? pending : null;
-    }, onAsk, hide);
+    }, onAsk, () => {
+      selectionDismissed = true;
+      stickyReleaseSettling = false;
+      if (selectionTimer) clearTimeout(selectionTimer);
+      if (stickyReleaseTimer) clearTimeout(stickyReleaseTimer);
+      hide();
+    });
     positionFloating(button, placementTarget);
     document.body.appendChild(button);
     log.debug("Ask button shown");
@@ -846,6 +845,7 @@ export function attachSelectionHandler(
   };
 
   const captureStickyNative = (): SelectionAnchor | null => {
+    if (selectionDismissed) return null;
     const current = getSelectionAnchor(getMessageRoots(), findRootForNode);
 
     // While the user is actively dragging, follow the CURRENT highlight.
@@ -867,6 +867,7 @@ export function attachSelectionHandler(
   };
 
   const refreshFromSelection = (allowHostMutation = true) => {
+    if (selectionDismissed) return;
     const anchor = getSelectionAnchor(getMessageRoots(), findRootForNode);
     if (anchor) {
       if (pointerSelecting) {
@@ -964,6 +965,11 @@ export function attachSelectionHandler(
   };
 
   const onMouseUp = (e: MouseEvent) => {
+    if (e.detail >= 2) {
+      selectionDismissed = false;
+      pointerReleaseLocked = false;
+    }
+    if (selectionDismissed) return;
     if (selectionStrategy === "pointer") {
       // Normal pointer events fire first; mouseup is a reliable fallback when
       // the host page swallows/cancels pointerup.
@@ -979,9 +985,17 @@ export function attachSelectionHandler(
   };
 
   const onTouchEnd = () => {
+    selectionDismissed = false;
     if (selectionStrategy === "pointer") return;
     refreshFromSelection(!pointerReleaseLocked);
     if (!pointerReleaseLocked) scheduleRefresh(60);
+  };
+
+  const onDoubleClick = () => {
+    selectionDismissed = false;
+    pointerReleaseLocked = false;
+    refreshFromSelection();
+    scheduleRefresh(40);
   };
 
   const onKeyUp = (e: KeyboardEvent) => {
@@ -991,6 +1005,7 @@ export function attachSelectionHandler(
       e.key === "Home" ||
       e.key === "End"
     ) {
+      selectionDismissed = false;
       pointerReleaseLocked = false;
       refreshFromSelection();
       scheduleRefresh(40);
@@ -998,6 +1013,7 @@ export function attachSelectionHandler(
   };
 
   const onSelectionChange = () => {
+    if (selectionDismissed) return;
     if (selectionStrategy === "pointer") {
       // ChatGPT: snapshot Chrome's exact selection while the drag is active.
       // Do not display from this event; pointermove/release controls the pill.
@@ -1029,6 +1045,11 @@ export function attachSelectionHandler(
     if (t instanceof Element && t.closest("[data-ai-helper-ask='1']")) {
       return;
     }
+    captureDragSelection.cancel();
+    pointerStart = { x: e.clientX, y: e.clientY };
+    selectionGesture = e.shiftKey;
+    selectionDismissed = !selectionGesture;
+    hide();
     bestDragAnchor = null;
     bestNativeDragAnchor = null;
     pointerReleaseLocked = false;
@@ -1078,6 +1099,11 @@ export function attachSelectionHandler(
 
   const onPointerMove = (e: PointerEvent) => {
     if (!pointerSelecting || (e.buttons & 1) === 0) return;
+    if (pointerStart && Math.hypot(e.clientX - pointerStart.x, e.clientY - pointerStart.y) >= 3) {
+      selectionGesture = true;
+      selectionDismissed = false;
+    }
+    if (!selectionGesture) return;
 
     if (selectionStrategy === "pointer") {
       // Native first: this exactly matches what the user can see highlighted.
@@ -1123,6 +1149,13 @@ export function attachSelectionHandler(
 
   const onPointerUp = (e: PointerEvent) => {
     if (!pointerSelecting) return;
+    if (!selectionGesture) {
+      pointerSelecting = false;
+      pointerSelectionStart = null;
+      captureDragSelection.cancel();
+      hide();
+      return;
+    }
 
     if (selectionStrategy === "pointer") {
       finishPointerSelection(e.clientX, e.clientY);
@@ -1177,7 +1210,17 @@ export function attachSelectionHandler(
   };
 
   const onKeyDown = (e: KeyboardEvent) => {
-    if (e.key === "Escape" && pending) hide();
+    if (e.key === "Escape") {
+      selectionDismissed = true;
+      pointerSelecting = false;
+      stickyReleaseSettling = false;
+      bestDragAnchor = null;
+      bestNativeDragAnchor = null;
+      captureDragSelection.cancel();
+      if (selectionTimer) clearTimeout(selectionTimer);
+      if (stickyReleaseTimer) clearTimeout(stickyReleaseTimer);
+      hide();
+    }
   };
 
   /** Keep the Ask button while scrolling; only hide if the anchor is gone. */
@@ -1203,6 +1246,7 @@ export function attachSelectionHandler(
 
   document.addEventListener("mouseup", onMouseUp, true);
   document.addEventListener("touchend", onTouchEnd, true);
+  document.addEventListener("dblclick", onDoubleClick, true);
   document.addEventListener("keyup", onKeyUp, true);
   document.addEventListener("keydown", onKeyDown, true);
   document.addEventListener("pointerdown", onPointerDown, true);
@@ -1215,6 +1259,7 @@ export function attachSelectionHandler(
   return () => {
     document.removeEventListener("mouseup", onMouseUp, true);
     document.removeEventListener("touchend", onTouchEnd, true);
+    document.removeEventListener("dblclick", onDoubleClick, true);
     document.removeEventListener("keyup", onKeyUp, true);
     document.removeEventListener("keydown", onKeyDown, true);
     document.removeEventListener("pointerdown", onPointerDown, true);

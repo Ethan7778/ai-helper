@@ -3,7 +3,7 @@ export type HighlightStyle = "classic" | "underline";
 
 /** Preferred amount of detail for new sidebar answers. */
 export type AnswerLength = "short" | "medium" | "detailed";
-export const DEFAULT_ANSWER_LENGTH: AnswerLength = "medium";
+export const DEFAULT_ANSWER_LENGTH: AnswerLength = "short";
 
 export function normalizeAnswerLength(raw: unknown): AnswerLength {
   return raw === "short" || raw === "medium" || raw === "detailed"
@@ -28,6 +28,8 @@ export interface Reply {
   role: "user" | "assistant";
   text: string;
   ts: number;
+  /** Optional takeaways, generated with a sufficiently long assistant reply. */
+  summary?: string[];
 }
 
 /** A highlight-anchored follow-up thread, persisted by character offsets. */
@@ -84,6 +86,7 @@ export interface AskFollowUpRequest {
   conversationExcerpt: string;
   question: string;
   answerLength?: AnswerLength;
+  summaryEnabled?: boolean;
   messageId: string;
   threadId: string;
   sideConversationId?: string;

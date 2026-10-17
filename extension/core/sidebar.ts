@@ -27,6 +27,7 @@ import { loadSidebarWidth, saveSidebarWidth } from "./storage";
 import { StreamSmoother } from "./stream-smoother";
 import { createLogger } from "./log";
 import { hexToRgba } from "./anchor";
+import { SUMMARY_MIN_WORDS } from "./summary";
 
 const log = createLogger("sidebar");
 
@@ -63,6 +64,7 @@ export interface SidebarCallbacks {
   ) => Promise<{ ok: boolean; reply?: string; error?: string }>;
   onAppearanceChange: (appearance: UiAppearance) => void | Promise<void>;
   onAnswerLengthChange: (length: AnswerLength) => void | Promise<void>;
+  onSummaryChange: (enabled: boolean) => void | Promise<void>;
 }
 
 export interface SidebarOptions {
@@ -72,6 +74,7 @@ export interface SidebarOptions {
 
 const SEND_ICON = `<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
 const BACK_ICON = `<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M15 5l-7 7 7 7" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+const TRASH_ICON = `<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7"/></svg>`;
 
 const STYLES = `
 :host {
@@ -331,59 +334,21 @@ const STYLES = `
 .preview .live {
   color: var(--live);
 }
-.menu {
-  position: relative;
-  flex-shrink: 0;
-}
-.menu-btn {
-  border: none;
-  background: transparent;
-  color: var(--text-muted);
-  font-size: 18px;
-  line-height: 1;
-  padding: 2px 6px;
-  cursor: pointer;
-  border-radius: 6px;
-  letter-spacing: 0.02em;
-}
-.menu-btn:hover,
-.menu.open .menu-btn {
-  background: var(--bg-muted);
-  color: var(--text-secondary);
-}
-.menu-dropdown {
-  display: none;
-  position: absolute;
-  top: 100%;
-  right: 0;
-  min-width: 130px;
-  padding: 4px;
-  background: var(--bg-elevated);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  box-shadow: 0 6px 18px var(--shadow);
-  z-index: 4;
-}
-.menu.open .menu-dropdown {
-  display: block;
-}
-.menu-item {
-  display: block;
-  width: 100%;
-  border: none;
-  background: transparent;
-  text-align: left;
-  padding: 8px 10px;
-  border-radius: 6px;
-  font: inherit;
-  font-weight: 400;
-  font-size: 13px;
+.delete-thread:hover {
   color: var(--danger);
-  cursor: pointer;
-}
-.menu-item:hover {
   background: var(--danger-bg);
 }
+.reply-summary {
+  margin-top: 14px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+.summary-title { font-weight: 600; margin: 0 0 6px; }
+.reply-summary ul { margin: 0; padding-left: 18px; }
+.reply-summary li + li { margin-top: 5px; }
+.summary-control { margin-top: 18px; }
 .quote-block {
   flex-shrink: 0;
   margin: 12px 14px 0;
@@ -769,6 +734,16 @@ export class Sidebar {
   private answerLength: AnswerLength = DEFAULT_ANSWER_LENGTH;
   private answerLengthSaving = false;
   private answerLengthError = "";
+  private summaryEnabled = false;
+  private summarySaving = false;
+  private summaryError = "";
+  private readonly onResize = () => this.applyLayout();
+  private readonly onEscape = (event: KeyboardEvent) => {
+    if (event.key !== "Escape" || event.isComposing || this.collapsed) return;
+    event.preventDefault();
+    this.setCollapsed(true);
+    this.fab.focus({ preventScroll: true });
+  };
   private appearance: UiAppearance = { ...DEFAULT_UI_APPEARANCE };
   /** Start collapsed so we don't cover the site's chrome until needed. */
   private collapsed = true;
@@ -816,7 +791,9 @@ export class Sidebar {
       this.preferredWidth = saved;
       this.applyLayout();
     });
-    window.addEventListener("resize", () => this.applyLayout());
+    window.addEventListener("resize", this.onResize);
+    // The window input guard forwards textarea keys through SIDEBAR_KEY_EVENT.
+    window.addEventListener("keydown", this.onEscape, true);
   }
 
   /** Re-append the host if the page's own rendering removed it. */
@@ -831,6 +808,13 @@ export class Sidebar {
     return this.host.isConnected;
   }
 
+  destroy(): void {
+    window.removeEventListener("resize", this.onResize);
+    window.removeEventListener("keydown", this.onEscape, true);
+    this.dock.apply(false, this.width);
+    this.host.remove();
+  }
+
   describe(): Record<string, unknown> {
     return {
       collapsed: this.collapsed,
@@ -838,6 +822,7 @@ export class Sidebar {
       preferredWidth: this.preferredWidth,
       appearance: this.appearance,
       answerLength: this.answerLength,
+      summaryEnabled: this.summaryEnabled,
       hostParent: this.host.parentElement?.tagName.toLowerCase() ?? null,
       panelRect: this.panel.getBoundingClientRect().toJSON(),
       ...this.dock.describe(),
@@ -853,6 +838,22 @@ export class Sidebar {
   setAnswerLength(length: AnswerLength): void {
     this.answerLength = normalizeAnswerLength(length);
     if (this.settingsOpen) this.render();
+  }
+
+  setSummaryEnabled(enabled: boolean): void {
+    this.summaryEnabled = enabled === true;
+    if (this.settingsOpen) this.render();
+  }
+
+  private focusComposer(): void {
+    const id = this.openId;
+    const focus = () => {
+      if (this.collapsed || this.settingsOpen || this.openId !== id || !id) return;
+      const input = this.composerFor(id);
+      if (input && !input.readOnly) input.focus({ preventScroll: true });
+    };
+    focus();
+    requestAnimationFrame(focus);
   }
 
   private applyAppearanceVars(): void {
@@ -884,7 +885,7 @@ export class Sidebar {
     this.activeId = threadId;
     this.setCollapsed(false);
     this.render();
-    this.composerFor(threadId)?.focus({ preventScroll: true });
+    this.focusComposer();
   }
 
   private openThread(threadId: string): void {
@@ -897,7 +898,7 @@ export class Sidebar {
     this.activeId = threadId;
     this.callbacks.onFocusThread(threadId);
     this.render();
-    this.composerFor(threadId)?.focus({ preventScroll: true });
+    this.focusComposer();
   }
 
   private showList(): void {
@@ -916,7 +917,7 @@ export class Sidebar {
   private closeSettings(): void {
     this.settingsOpen = false;
     this.render();
-    if (this.openId) this.composerFor(this.openId)?.focus({ preventScroll: true });
+    this.focusComposer();
   }
 
   private async updateAnswerLength(length: AnswerLength): Promise<void> {
@@ -952,6 +953,26 @@ export class Sidebar {
     return button;
   }
 
+  private async updateSummary(enabled: boolean): Promise<void> {
+    if (this.summarySaving || enabled === this.summaryEnabled) return;
+    const previous = this.summaryEnabled;
+    this.summaryEnabled = enabled;
+    this.summarySaving = true;
+    this.summaryError = "";
+    this.render();
+    try {
+      await this.callbacks.onSummaryChange(enabled);
+    } catch (err) {
+      this.summaryEnabled = previous;
+      this.summaryError = "Could not save. Please try again.";
+      log.warn("could not save summary preference:", err);
+    } finally {
+      this.summarySaving = false;
+      this.render();
+      if (this.settingsOpen) this.viewEl.querySelector<HTMLButtonElement>(`[data-summary-enabled="${enabled}"]`)?.focus({ preventScroll: true });
+    }
+  }
+
   private updateAppearance(partial: Partial<UiAppearance>): void {
     this.appearance = { ...this.appearance, ...partial };
     this.applyAppearanceVars();
@@ -961,7 +982,7 @@ export class Sidebar {
 
   /**
    * Unsent highlight drafts are never persisted. Drop them as soon as the
-   * user leaves the composer (back, close panel, open another thread).
+   * user leaves the thread (back to list or opening another thread).
    */
   private discardOpenDraftIfEmpty(): void {
     const id = this.openId;
@@ -1016,7 +1037,8 @@ export class Sidebar {
   }
 
   private setCollapsed(collapsed: boolean): void {
-    if (collapsed) this.discardOpenDraftIfEmpty();
+    // Closing is temporary: retain even an unsent highlighted draft for reopening.
+    if (collapsed) (this.shadow.activeElement as HTMLElement | null)?.blur();
     this.collapsed = collapsed;
     this.panel.classList.toggle("collapsed", collapsed);
     this.fab.setAttribute("aria-expanded", collapsed ? "false" : "true");
@@ -1024,6 +1046,7 @@ export class Sidebar {
     this.fab.title = label;
     this.fab.setAttribute("aria-label", label);
     this.applyLayout();
+    if (!collapsed) this.focusComposer();
   }
 
   /** Sync panel width, toggle position, and page docking with current state. */
@@ -1035,12 +1058,6 @@ export class Sidebar {
     this.fab.style.right = this.collapsed
       ? "10px"
       : `${Math.min(this.width, window.innerWidth) + 10}px`;
-  }
-
-  private closeAllMenus(): void {
-    this.shadow
-      .querySelectorAll(".menu.open")
-      .forEach((el) => el.classList.remove("open"));
   }
 
   private renderShell(): void {
@@ -1067,10 +1084,6 @@ export class Sidebar {
     this.panel.appendChild(this.viewEl);
     this.shadow.appendChild(this.panel);
 
-    this.shadow.addEventListener("click", (event) => {
-      const target = event.target as Element | null;
-      if (!target?.closest(".menu")) this.closeAllMenus();
-    });
   }
 
   private buildResizer(): HTMLElement {
@@ -1173,7 +1186,7 @@ export class Sidebar {
       if (list) list.scrollTop = listScroll;
     }
 
-    if (focusState?.id) {
+    if (focusState?.id && !this.collapsed && !this.settingsOpen) {
       const input = this.composerFor(focusState.id);
       input?.focus({ preventScroll: true });
       input?.setSelectionRange(focusState.start, focusState.end);
@@ -1273,6 +1286,42 @@ export class Sidebar {
     status.setAttribute("role", "status");
     status.textContent = this.answerLengthError || (this.answerLengthSaving ? "Saving…" : "Applies to your next reply. Saved automatically.");
     answers.appendChild(status);
+    const summarySection = document.createElement("div");
+    summarySection.className = "summary-control";
+    const summaryLabel = document.createElement("div");
+    summaryLabel.id = "summary-label";
+    summaryLabel.className = "settings-label";
+    summaryLabel.textContent = "Summary";
+    summarySection.appendChild(summaryLabel);
+    const summaryHint = document.createElement("p");
+    summaryHint.id = "summary-hint";
+    summaryHint.className = "settings-hint";
+    summaryHint.textContent = `Optionally add up to 3 short takeaways to answers of at least ${SUMMARY_MIN_WORDS} words.`;
+    summarySection.appendChild(summaryHint);
+    const summaryToggle = document.createElement("div");
+    summaryToggle.className = "style-toggle";
+    summaryToggle.setAttribute("role", "group");
+    summaryToggle.setAttribute("aria-labelledby", "summary-label");
+    summaryToggle.setAttribute("aria-describedby", "summary-hint");
+    for (const option of [{ value: false, label: "Off" }, { value: true, label: "On" }]) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "style-btn";
+      button.textContent = option.label;
+      button.dataset.summaryEnabled = String(option.value);
+      button.setAttribute("aria-pressed", String(this.summaryEnabled === option.value));
+      button.disabled = this.summarySaving;
+      if (this.summaryEnabled === option.value) button.classList.add("active");
+      button.addEventListener("click", () => void this.updateSummary(option.value));
+      summaryToggle.appendChild(button);
+    }
+    summarySection.appendChild(summaryToggle);
+    const summaryStatus = document.createElement("p");
+    summaryStatus.className = `settings-hint${this.summaryError ? " answer-status error" : ""}`;
+    summaryStatus.setAttribute("role", "status");
+    summaryStatus.textContent = this.summaryError || (this.summarySaving ? "Saving…" : "Saved automatically. Applies to your next reply.");
+    summarySection.appendChild(summaryStatus);
+    answers.appendChild(summarySection);
     body.appendChild(answers);
     const divider = document.createElement("div");
     divider.className = "settings-divider";
@@ -1400,10 +1449,10 @@ export class Sidebar {
       `<div class="quote">${escapeHtml(thread.quotedText)}</div><div class="preview">${preview}</div>`
     );
     row.appendChild(main);
-    row.appendChild(this.buildMenu(thread));
+    row.appendChild(this.buildDeleteButton(thread));
 
     row.addEventListener("click", (e) => {
-      if ((e.target as Element | null)?.closest(".menu")) return;
+      if ((e.target as Element | null)?.closest(".delete-thread")) return;
       this.openThread(thread.id);
     });
     row.addEventListener("keydown", (e) => {
@@ -1416,40 +1465,16 @@ export class Sidebar {
     return row;
   }
 
-  private buildMenu(thread: Thread): HTMLElement {
-    const menu = document.createElement("div");
-    menu.className = "menu";
-    const menuBtn = document.createElement("button");
-    menuBtn.type = "button";
-    menuBtn.className = "menu-btn";
-    menuBtn.title = "Thread options";
-    menuBtn.setAttribute("aria-label", "Thread options");
-    menuBtn.setAttribute("aria-haspopup", "true");
-    menuBtn.setAttribute("aria-expanded", "false");
-    menuBtn.textContent = "⋯";
-    menuBtn.addEventListener("click", (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      const wasOpen = menu.classList.contains("open");
-      this.closeAllMenus();
-      if (!wasOpen) {
-        menu.classList.add("open");
-        menuBtn.setAttribute("aria-expanded", "true");
-      }
-    });
-
-    const dropdown = document.createElement("div");
-    dropdown.className = "menu-dropdown";
-    dropdown.setAttribute("role", "menu");
+  private buildDeleteButton(thread: Thread): HTMLButtonElement {
     const deleteBtn = document.createElement("button");
     deleteBtn.type = "button";
-    deleteBtn.className = "menu-item";
-    deleteBtn.setAttribute("role", "menuitem");
-    deleteBtn.textContent = "Delete thread";
+    deleteBtn.className = "icon-btn delete-thread";
+    deleteBtn.title = "Delete thread";
+    deleteBtn.setAttribute("aria-label", "Delete thread");
+    setHtml(deleteBtn, TRASH_ICON);
     deleteBtn.addEventListener("click", (e) => {
       e.preventDefault();
       e.stopPropagation();
-      this.closeAllMenus();
       this.drafts.delete(thread.id);
       this.errors.delete(thread.id);
       this.partials.delete(thread.id);
@@ -1459,10 +1484,7 @@ export class Sidebar {
       if (this.openId === thread.id) this.openId = null;
       void this.callbacks.onDeleteThread(thread.id);
     });
-    dropdown.appendChild(deleteBtn);
-    menu.appendChild(menuBtn);
-    menu.appendChild(dropdown);
-    return menu;
+    return deleteBtn;
   }
 
   private buildThreadView(thread: Thread): HTMLElement {
@@ -1484,8 +1506,8 @@ export class Sidebar {
     title.textContent = "Thread";
     header.appendChild(back);
     header.appendChild(title);
-    header.appendChild(this.buildMenu(thread));
     header.appendChild(this.buildSettingsButton());
+    header.appendChild(this.buildDeleteButton(thread));
     view.appendChild(header);
 
     const quote = document.createElement("div");
@@ -1515,6 +1537,22 @@ export class Sidebar {
       div.className = `msg ${r.role}`;
       if (r.role === "assistant") {
         setHtml(div, `<div class="body">${formatReplyHtml(r.text)}</div>`);
+        if (r.summary?.length) {
+          const summary = document.createElement("section");
+          summary.className = "reply-summary";
+          summary.setAttribute("aria-label", "Summary");
+          const heading = document.createElement("div");
+          heading.className = "summary-title";
+          heading.textContent = "Summary";
+          const bullets = document.createElement("ul");
+          for (const sentence of r.summary.slice(0, 3)) {
+            const item = document.createElement("li");
+            item.textContent = sentence;
+            bullets.appendChild(item);
+          }
+          summary.append(heading, bullets);
+          div.appendChild(summary);
+        }
       } else {
         div.textContent = r.text;
       }
@@ -1624,6 +1662,7 @@ export class Sidebar {
 
     send.addEventListener("click", () => void doSend());
     const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") { this.onEscape(e); return; }
       // Shift+Enter inserts a newline; Enter during IME composition confirms text.
       if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
         e.preventDefault();
