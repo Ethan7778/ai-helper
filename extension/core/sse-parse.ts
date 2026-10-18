@@ -101,18 +101,26 @@ export function parseConversationSseText(text: string): SseParseResult {
           if (fromJwt) topicId = fromJwt;
         }
       }
-      if (event.type === "stream_handoff" && Array.isArray(event.options)) {
-        for (const opt of event.options) {
-          if (!opt || typeof opt !== "object") continue;
-          const o = opt as { type?: string; topic_id?: string };
-          if (
-            (o.type === "subscribe_ws_topic" ||
-              o.type === "resume_sse_endpoint") &&
-            typeof o.topic_id === "string"
-          ) {
-            topicId = o.topic_id;
-            break;
+      if (event.type === "stream_handoff") {
+        if (Array.isArray(event.options)) {
+          for (const opt of event.options) {
+            if (!opt || typeof opt !== "object") continue;
+            const o = opt as { type?: string; topic_id?: string };
+            if (
+              (o.type === "subscribe_ws_topic" ||
+                o.type === "resume_sse_endpoint") &&
+              typeof o.topic_id === "string"
+            ) {
+              topicId = o.topic_id;
+              break;
+            }
           }
+        }
+        // Some handoffs identify the turn but omit the options array. The
+        // topic for that same turn follows the conversation-turn-<id> form.
+        if (!topicId && typeof event.turn_exchange_id === "string" &&
+            /^[a-f0-9-]{36}$/i.test(event.turn_exchange_id)) {
+          topicId = `conversation-turn-${event.turn_exchange_id}`;
         }
       }
       continue;
@@ -231,9 +239,13 @@ function topicIdFromJwt(token: string): string | undefined {
     const parts = token.split(".");
     if (parts.length < 2) return undefined;
     const json = atob(parts[1]!.replace(/-/g, "+").replace(/_/g, "/"));
-    const payload = JSON.parse(json) as { turn_topic_id?: string };
-    return typeof payload.turn_topic_id === "string"
-      ? payload.turn_topic_id
+    const payload = JSON.parse(json) as {
+      turn_topic_id?: string;
+      topic_id?: string;
+    };
+    const topic = payload.turn_topic_id ?? payload.topic_id;
+    return typeof topic === "string" && topic.startsWith("conversation-turn-")
+      ? topic
       : undefined;
   } catch {
     return undefined;
