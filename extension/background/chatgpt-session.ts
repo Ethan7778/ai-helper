@@ -586,8 +586,21 @@ export async function parseConversationStream(
   // incomplete until WS recovery — returning early here truncates mid-sentence.
   if (parsed.handedOff || parsed.topicId) {
     if (!parsed.topicId) {
+      // A completed inline answer needs no WebSocket subscription, even if
+      // the server also sent handoff metadata without a topic. Keep strict
+      // completion checking so an interrupted partial is never saved as final.
+      if (parsed.finished && parsed.reply.trim()) {
+        log.warn("Handoff omitted topic id, but the inline answer finished");
+        emit(parsed.reply);
+        return {
+          reply: parsed.reply,
+          conversationId: parsed.conversationId,
+          messageId: parsed.messageId,
+        };
+      }
       log.error(
-        `Empty SSE with no topic to resume; head=${text.slice(0, 400)}`
+        `Handoff with no topic to resume; events=[${parsed.eventTypes.join(",")}] ` +
+        `partialLen=${parsed.reply.length} finished=${parsed.finished}`
       );
       throw new Error(
         "ChatGPT handed off the stream without a topic id. Reload and try again."
