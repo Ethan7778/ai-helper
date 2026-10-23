@@ -434,6 +434,8 @@ const STYLES = `
   color: var(--text-muted);
 }
 .msg {
+  flex-shrink: 0;
+  min-width: 0;
   max-width: 100%;
   word-break: break-word;
   overflow-wrap: anywhere;
@@ -506,6 +508,19 @@ const STYLES = `
   margin: 0;
   padding: 10px 12px;
   overflow-x: auto;
+  white-space: pre;
+  overflow-wrap: normal;
+  word-break: normal;
+}
+.math-display {
+  display: block;
+  overflow-x: auto;
+  padding: 8px 0;
+  max-width: 100%;
+}
+.math-inline, .math-display {
+  overflow-wrap: normal;
+  word-break: normal;
 }
 .code-block code {
   background: none;

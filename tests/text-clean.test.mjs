@@ -65,5 +65,21 @@ assert(/<ul><li>a<\/li><li>b<\/li><\/ul><ol><li>one<\/li><li>two<\/li><\/ol>/.te
 const kept = cleanChatGptText("x\n```\n  indented\n```");
 assert(/\n  indented\n/.test(kept), `fence indentation lost: ${JSON.stringify(kept)}`);
 
+for (const fence of ['```', '````', '~~~']) {
+  const source = `${fence}js\n  map[key] = image[index];\n  const x = "**literal**";\n${fence}`;
+  assert(cleanChatGptText(source) === source, 'cleanup modified fenced code');
+  assert(formatReplyHtml(source).includes('map[key] = image[index];'), 'renderer deleted code');
+}
+assert(cleanChatGptText('Use `map[key]` here.') === 'Use `map[key]` here.', 'cleanup modified inline code');
+assert(formatReplyHtml('````md\n```js\nx\n```\n````').includes('```js\nx\n```'), 'nested fence ended early');
+for (const source of [String.raw`\(x^2\)`, String.raw`\[\frac{1}{2}\]`, '$$x^2$$', '$x^2$']) {
+  assert(formatReplyHtml(source).includes('<math'), `math missing: ${source}`);
+}
+assert(!formatReplyHtml('`$x$`').includes('<math'), 'inline code rendered as math');
+assert(!formatReplyHtml('```tex\n$x$\n```').includes('<math'), 'fenced code rendered as math');
+assert(!formatReplyHtml('Costs $5 or $10.').includes('<math'), 'currency rendered as math');
+assert(!formatReplyHtml(String.raw`\(\href{javascript:alert(1)}{x}\)`).includes('href="javascript:'), 'unsafe math link');
+assert(formatReplyHtml('<script>alert(1)</script>').includes('&lt;script&gt;'), 'HTML was not escaped');
+
 rmSync(dir, { recursive: true, force: true });
 console.log("ok — text-clean strips image_group widgets and markdown noise");

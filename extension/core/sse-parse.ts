@@ -40,6 +40,7 @@ export function parseConversationSseText(text: string): SseParseResult {
   let lastOp = "append";
   let handedOff = false;
   let finished = false;
+  let acceptsText = true;
   const eventTypes: string[] = [];
 
   const applyAssistantMessage = (msg: {
@@ -49,9 +50,12 @@ export function parseConversationSseText(text: string): SseParseResult {
     status?: string;
     channel?: string;
   }) => {
-    if (msg?.author?.role !== "assistant") return;
-    if (msg.channel === "analysis" || msg.channel === "commentary") return;
-    if (msg.id && msg.id !== messageId) finished = false;
+    acceptsText = msg?.author?.role === "assistant" && msg.channel !== "analysis" && msg.channel !== "commentary";
+    if (!acceptsText) return;
+    if (msg.id && msg.id !== messageId) {
+      finished = false;
+      reply = "";
+    }
     const chunk = extractTextFromMessage(msg);
     if (chunk) reply = chunk;
     if (msg.id) messageId = msg.id;
@@ -146,7 +150,7 @@ export function parseConversationSseText(text: string): SseParseResult {
     const o = typeof event.o === "string" ? event.o : undefined;
     if (p !== undefined) lastPath = p;
     if (o !== undefined) lastOp = o;
-    if (p === "/message/status" && typeof v === "string") {
+    if (acceptsText && p === "/message/status" && typeof v === "string") {
       finished = v === "finished_successfully";
     }
 
@@ -165,13 +169,13 @@ export function parseConversationSseText(text: string): SseParseResult {
       if (nested.message) applyAssistantMessage(nested.message);
     }
 
-    if (typeof v === "string") {
+    if (acceptsText && typeof v === "string") {
       const path = p ?? lastPath;
       const op = o ?? lastOp;
       const isParts =
         !path || path.includes("/parts/") || path.endsWith("/parts/0");
       if (isParts) {
-        if (op === "append" || (!o && !p)) reply += v;
+        if (op === "append") reply += v;
         else if (op === "replace" || op === "add") reply = v;
       }
     }
@@ -180,10 +184,10 @@ export function parseConversationSseText(text: string): SseParseResult {
       for (const sub of v) {
         if (!sub || typeof sub !== "object") continue;
         const sp = sub as { p?: string; o?: string; v?: unknown };
-        if (sp.p === "/message/status" && typeof sp.v === "string") {
+        if (acceptsText && sp.p === "/message/status" && typeof sp.v === "string") {
           finished = sp.v === "finished_successfully";
         }
-        if (typeof sp.v === "string" && (sp.p || "").includes("parts")) {
+        if (acceptsText && typeof sp.v === "string" && (sp.p || "").includes("parts")) {
           if (sp.o === "append") reply += sp.v;
           else if (sp.o === "replace" || sp.o === "add") reply = sp.v;
         }

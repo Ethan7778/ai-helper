@@ -144,6 +144,40 @@ test("extracts finished assistant from conversation mapping", () => {
   assert.equal(found.status, "finished_successfully");
 });
 
+test("reasoning patches cannot append to or finish the visible answer", () => {
+  const data = value => `data: ${JSON.stringify(value)}\n`;
+  const raw = data({message: {id: 'answer', author: {role: 'assistant'}, content: {parts: ['Answer']}}}) +
+    data({message: {id: 'reason', author: {role: 'assistant'}, channel: 'analysis', content: {parts: ['Thinking']}}}) +
+    data({p: '/message/content/parts/0', o: 'append', v: ' more reasoning'}) +
+    data({o: 'patch', v: [{p: '/message/status', o: 'replace', v: 'finished_successfully'}]});
+  const parsed = parseConversationSseText(raw);
+  assert.equal(parsed.reply, 'Answer');
+  assert.equal(parsed.finished, false);
+});
+
+test("handoff derives a topic from the turn exchange id", () => {
+  const id = '12345678-1234-1234-1234-123456789abc';
+  const parsed = parseConversationSseText(`data: ${JSON.stringify({type: 'stream_handoff', turn_exchange_id: id})}\n`);
+  assert.equal(parsed.topicId, `conversation-turn-${id}`);
+  assert.equal(parsed.finished, false);
+});
+
+test("resume token accepts either topic claim", () => {
+  for (const claim of ['turn_topic_id', 'topic_id']) {
+    const token = `header.${Buffer.from(JSON.stringify({[claim]: 'conversation-turn-abc123'})).toString('base64url')}.signature`;
+    const parsed = parseConversationSseText(`data: ${JSON.stringify({type: 'resume_conversation_token', token})}\n`);
+    assert.equal(parsed.topicId, 'conversation-turn-abc123');
+  }
+});
+
+test("omitted operation inherits replace instead of appending", () => {
+  const parsed = parseConversationSseText([
+    'data: {"p":"/message/content/parts/0","o":"replace","v":"First"}',
+    'data: {"v":"Revised"}',
+  ].join('\n'));
+  assert.equal(parsed.reply, 'Revised');
+});
+
 if (!process.exitCode) {
   console.log("\nAll SSE handoff tests passed.");
 } else {

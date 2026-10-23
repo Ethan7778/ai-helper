@@ -112,8 +112,24 @@ async function run() {
   }
   check(warnings.length === 0, 'Expected overlap recovery must not produce extension warnings');
   check(message.textContent === '0123456789', 'Overlap recovery must preserve message text');
+  threads[0]!.replies.push({ role: 'assistant', ts: 2, text:
+    String.raw`Equation: \(x^2\).` + '\n\n' + String.raw`\[\frac{1}{2}\]` +
+    '\n\n~~~js\n  map[key] = image[index];\n' + 'x'.repeat(240) + '\n~~~\n\n' +
+    'A complete paragraph.\n\n'.repeat(60) + 'END OF ANSWER' });
+  sidebar.setThreads(threads);
+  sidebar.focusThread('first');
+  const body = shadow.querySelector<HTMLElement>('.msg.assistant .body')!;
+  check(body.querySelectorAll('math').length === 2, 'Inline and display math must render in the shadow root');
+  check(body.querySelector('mfrac')!.getBoundingClientRect().height > 0, 'Fraction must have visible layout');
+  const pre = body.querySelector('pre')!;
+  check(pre.textContent!.includes('  map[key] = image[index];'), 'Code must retain indentation and indexing');
+  check(pre.scrollWidth > pre.clientWidth, 'Long code must scroll horizontally');
+  const messages = shadow.querySelector<HTMLElement>('.messages')!;
+  check(messages.scrollHeight > messages.clientHeight, 'Long answers must scroll vertically');
+  check(getComputedStyle(body.parentElement!).flexShrink === '0', 'Messages must not shrink into overlapping answers');
+  check(body.textContent!.endsWith('END OF ANSWER'), 'The full answer must remain present');
   sidebar.destroy();
-  document.getElementById('result')!.textContent = 'PASS: delete confirmation, cancel, Escape, rerenders, list deletion, composer focus, host focus recovery, user focus choice, overlap recovery';
+  document.getElementById('result')!.textContent = 'PASS: sidebar interactions, math layout, code preservation, horizontal code scrolling, and full long answers';
 }
 
 run().catch(error => {

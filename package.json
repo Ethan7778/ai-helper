@@ -18,6 +18,7 @@
     "typescript": "^5.7.3"
   },
   "dependencies": {
-    "js-sha3": "^0.13.0"
+    "js-sha3": "^0.13.0",
+    "katex": "^0.19.0"
   }
 }

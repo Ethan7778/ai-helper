@@ -2,7 +2,16 @@
  * Strip ChatGPT private-use citation / entity / media tokens into readable text.
  * Example: entity["people","Fred DeLuca","…"] → Fred DeLuca
  */
+import katex from "katex";
+
 export function cleanChatGptText(text: string): string {
+  return splitFences(text.replace(/\r\n?/g, "\n"))
+    .map(seg => seg.code ? seg.raw : seg.raw.split(/(`+[^`\n]*`+)/g)
+      .map(part => part.startsWith("`") ? part : cleanProse(part)).join(""))
+    .join("").trim();
+}
+
+function cleanProse(text: string): string {
   if (!text) return "";
 
   let out = text;
@@ -47,7 +56,7 @@ export function cleanChatGptText(text: string): string {
     )
     .join("");
 
-  return out.trim();
+  return out;
 }
 
 /**
@@ -134,13 +143,16 @@ interface Segment {
 /** Split on ``` fences; an unclosed trailing fence (mid-stream) counts as code. */
 function splitFences(text: string): Segment[] {
   const segments: Segment[] = [];
-  const re = /```[^\n]*(?:\n(?:[\s\S]*?\n)?```[^\n]*|[\s\S]*$)/g;
+  const re = /^ {0,3}(`{3,}|~{3,})[^\n]*(?:\n|$)/gm;
   let last = 0;
   for (let m = re.exec(text); m; m = re.exec(text)) {
     if (m.index > last) segments.push({ raw: text.slice(last, m.index), code: false });
-    segments.push({ raw: m[0], code: true });
-    last = m.index + m[0].length;
-    if (m[0].length === 0) re.lastIndex++;
+    const close = new RegExp(`^ {0,3}${m[1]![0]}{${m[1]!.length},}[ \\t]*(?=\\n|$)`, "gm");
+    close.lastIndex = re.lastIndex;
+    const end = close.exec(text);
+    last = end ? end.index + end[0].length : text.length;
+    segments.push({ raw: text.slice(m.index, last), code: true });
+    re.lastIndex = last;
   }
   if (last < text.length) segments.push({ raw: text.slice(last), code: false });
   return segments;
@@ -162,9 +174,10 @@ function formatInline(escaped: string): string {
 
 function formatCodeBlock(raw: string): string {
   const firstNl = raw.indexOf("\n");
-  const lang = (firstNl < 0 ? raw.slice(3) : raw.slice(3, firstNl)).trim();
+  const fence = /^ {0,3}(`{3,}|~{3,})/.exec(raw)!;
+  const lang = (firstNl < 0 ? raw.slice(fence[0].length) : raw.slice(fence[0].length, firstNl)).trim();
   let body = firstNl < 0 ? "" : raw.slice(firstNl + 1);
-  body = body.replace(/(?:^|\n)```[^\n]*$/, "");
+  body = body.replace(new RegExp(`(?:^|\\n) {0,3}${fence[1]![0]}{${fence[1]!.length},}[ \\t]*$`), "");
   const label = lang ? `<div class="code-lang">${escapeHtml(lang)}</div>` : "";
   return `<div class="code-block">${label}<pre><code>${escapeHtml(body)}</code></pre></div>`;
 }
@@ -245,8 +258,24 @@ export function formatReplyHtml(text: string): string {
   // A streaming cut can land inside a ChatGPT citation token; hide the tail.
   const cleaned = cleanChatGptText(text.replace(/\uE200[^\uE201]*$/, ""));
   return splitFences(cleaned)
-    .map((seg) => (seg.code ? formatCodeBlock(seg.raw) : formatProse(seg.raw)))
+    .map((seg) => (seg.code ? formatCodeBlock(seg.raw) : formatMathProse(seg.raw)))
     .join("");
+}
+
+function formatMathProse(text: string): string {
+  const math: string[] = [];
+  // Protect code spans first; TeX must never be interpreted inside code.
+  const protectedText = text.replace(/(`+)[^`\n]*?\1|\\\[([\s\S]*?)\\\]|\\\(([\s\S]*?)\\\)|\$\$([\s\S]*?)\$\$|(?<![\\\w$])\$(?!\s)([^$\n]+?)(?<!\s)\$(?!\d)/g,
+    (raw, code, display, inline, dollars, single) => {
+      if (code) return raw;
+      const block = display !== undefined || dollars !== undefined;
+      const html = katex.renderToString(display ?? inline ?? dollars ?? single, {
+        output: "mathml", displayMode: block, throwOnError: false, trust: false,
+      });
+      math.push(`<span class="${block ? "math-display" : "math-inline"}">${html}</span>`);
+      return `\u0001${math.length - 1}\u0001`;
+    });
+  return formatProse(protectedText).replace(/\u0001(\d+)\u0001/g, (_, i) => math[Number(i)] ?? "");
 }
 
 function escapeHtml(s: string): string {

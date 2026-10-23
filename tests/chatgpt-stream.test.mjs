@@ -121,6 +121,24 @@ await test('an unexpectedly ended HTTP stream is an interruption', async () => {
   await assert.rejects(parseConversationStream(response(sse(message('Just a partial'))), 'token', 'agent'), /interrupted before it finished/);
 });
 
+await test('completed inline answer survives a handoff without a topic', async () => {
+  const before = sockets;
+  const raw = sse(message('Complete answer.', 'finished_successfully')) +
+    sse({ type: 'stream_handoff' }) + 'data: [DONE]\n\n';
+  const result = await parseConversationStream(response(raw), 'token', 'agent');
+  assert.equal(result.reply, 'Complete answer.');
+  assert.equal(sockets, before);
+});
+
+await test('reasoning completion cannot authorize a topicless partial answer', async () => {
+  const raw = sse(message('Partial answer')) + sse({ message: {
+    id: 'reasoning', author: { role: 'assistant' }, channel: 'analysis',
+    content: { parts: ['Thinking'] },
+  } }) + sse({ p: '/message/status', o: 'replace', v: 'finished_successfully' }) +
+    sse({ type: 'stream_handoff' }) + 'data: [DONE]\n\n';
+  await assert.rejects(parseConversationStream(response(raw), 'token', 'agent'), /without a topic id/);
+});
+
 await test('normal completed HTTP streams still return the full answer', async () => {
   const result = await parseConversationStream(response(sse(message('Complete answer.')) + 'data: [DONE]\n\n'), 'token', 'agent');
   assert.equal(result.reply, 'Complete answer.');
