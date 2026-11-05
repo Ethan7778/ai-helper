@@ -1,3 +1,4 @@
+import { uploadChatGptImages } from "./image-upload";
 /**
  * ChatGPT unofficial session client (sentinel + conversation).
  * PoW algorithm adapted from lanqian528/chat2api / pi-gpt (MIT-licensed ports).
@@ -668,7 +669,8 @@ async function postConversation(
   model: string,
   sideConversationId?: string,
   sideParentMessageId?: string,
-  onPartial?: (text: string) => void
+  onPartial?: (text: string) => void,
+  uploaded?: { parts: unknown[]; attachments: unknown[] }
 ): Promise<CompleteResult> {
   const messageId = uuid();
   const parentMessageId =
@@ -682,8 +684,8 @@ async function postConversation(
         id: messageId,
         author: { role: "user" },
         create_time: Date.now() / 1000,
-        content: { content_type: "text", parts: [prompt] },
-        metadata: {},
+        content: { content_type: uploaded?.parts.length ? "multimodal_text" : "text", parts: [...(uploaded?.parts || []), prompt] },
+        metadata: uploaded?.attachments.length ? { attachments: uploaded.attachments } : {},
       },
     ],
     parent_message_id: parentMessageId,
@@ -773,6 +775,9 @@ export async function completeViaChatGptSession(
   onPartial?: (text: string) => void
 ): Promise<AskFollowUpResponse> {
   try {
+    if (req.hasPriorImages && (!req.sideConversationId || !req.sideParentMessageId) && !req.images?.length) {
+      throw new Error("This side chat lost access to its earlier pictures. Start a new thread and attach them again.");
+    }
     const prompt = buildFollowUpPrompt({
       quotedText: req.quotedText,
       surroundingContext: req.surroundingContext,
@@ -782,6 +787,7 @@ export async function completeViaChatGptSession(
       summaryEnabled: req.summaryEnabled,
     });
 
+    const uploaded = req.images?.length ? await uploadChatGptImages(req.images, creds.accessToken) : undefined;
     const sentinel = await fetchSentinelTokens(
       creds.accessToken,
       creds.userAgent
@@ -795,7 +801,8 @@ export async function completeViaChatGptSession(
       model,
       req.sideConversationId,
       req.sideParentMessageId,
-      onPartial
+      onPartial,
+      uploaded
     );
 
     if (!result.conversationId) {

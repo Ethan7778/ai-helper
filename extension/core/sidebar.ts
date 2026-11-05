@@ -5,8 +5,12 @@ import type {
   Thread,
   UiAppearance,
   AnswerLength,
+  ImageAttachment,
 } from "./types";
 import { DEFAULT_UI_APPEARANCE, DEFAULT_ANSWER_LENGTH, normalizeAnswerLength } from "./types";
+import { prepareImage, MAX_IMAGES } from "./images";
+import { DEFAULT_TEXT_SIZE, TEXT_SIZE_OPTIONS, normalizeTextSize } from "./types";
+import { loadTextSize, saveTextSize, TEXT_SIZE_KEY } from "./storage";
 import { formatReplyHtml } from "./text-clean";
 import { fetchAccessTokenFromPage } from "./chatgpt-auth";
 import { completeViaChatGptSession } from "../background/chatgpt-session";
@@ -60,7 +64,8 @@ export interface SidebarCallbacks {
   onSend: (
     thread: Thread,
     question: string,
-    onPartial?: (text: string) => void
+    onPartial?: (text: string) => void,
+    images?: ImageAttachment[]
   ) => Promise<{ ok: boolean; reply?: string; error?: string }>;
   onAppearanceChange: (appearance: UiAppearance) => void | Promise<void>;
   onAnswerLengthChange: (length: AnswerLength) => void | Promise<void>;
@@ -77,6 +82,55 @@ const BACK_ICON = `<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="
 const TRASH_ICON = `<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7"/></svg>`;
 
 const STYLES = `
+.msg { min-width: 0; flex-shrink: 0; }
+.body { min-width: 0; }
+.body h1, .body h2, .body h3, .body h4, .body h5, .body h6 { line-height: 1.35; margin: 1em 0 .5em; font-size: 1.15em; }
+.body table { display: block; max-width: 100%; overflow-x: auto; border-collapse: collapse; margin: .75em 0; }
+.body th, .body td { border: 1px solid var(--border-strong); padding: .5em .7em; min-width: 70px; text-align: start; }
+.body th { background: var(--bg-muted); font-weight: 650; }
+.body a { color: var(--accent); text-decoration: underline; }
+.body hr { border: 0; border-top: 1px solid var(--border); margin: 1em 0; }
+.body blockquote { padding: .6em .8em; background: var(--bg-muted); border-radius: 6px; }
+.body input[type=checkbox] { pointer-events: none; }
+.hljs-keyword, .hljs-selector-tag, .hljs-literal { color: #c792ea; }
+.hljs-string, .hljs-attr, .hljs-addition { color: #c3e88d; }
+.hljs-number, .hljs-symbol, .hljs-bullet { color: #f78c6c; }
+.hljs-comment, .hljs-quote { color: #a0a9bb; font-style: italic; }
+.hljs-title, .hljs-function, .hljs-built_in { color: #82aaff; }
+.hljs-type, .hljs-variable, .hljs-attribute { color: #ffcb6b; }
+.hljs-meta, .hljs-name, .hljs-tag { color: #89ddff; }
+.code-block { min-width: 0; max-width: 100%; }
+.image-previews { display: flex; gap: 8px; flex-wrap: wrap; }
+.image-preview { position: relative; margin: 4px 0; }
+.image-preview img { width: 64px; height: 64px; object-fit: contain; border-radius: 8px; background: var(--bg-muted); }
+.image-preview button { position: absolute; top: 0; right: 0; background: var(--bg-elevated); color: var(--text); border: 1px solid var(--border-strong); border-radius: 50%; cursor: pointer; }
+.sent-picture { display: block; max-width: min(200px, 100%); margin-top: 8px; border-radius: 8px; }
+.attach-picture { flex: 0 0 auto; border: 0; background: transparent; color: var(--text); font: 24px/1 ${FONT_STACK}; cursor: pointer; padding: 6px; }
+.attach-picture:disabled { opacity: .4; cursor: default; }
+.text-size-preview { font-size: var(--reply-text-size, 15px); }
+/* Seven native range stops; visual ticks never intercept dragging. */
+.text-size-scale, .text-size-endpoints { display:flex; justify-content:space-between; align-items:baseline; color:var(--text-muted); }
+.text-size-scale { padding: 8px 12px 0; }
+.text-size-scale span:nth-child(1) { font-size:12px; }
+.text-size-scale span:nth-child(2) { font-size:18px; }
+.text-size-scale span:nth-child(3) { font-size:26px; }
+.text-size-track { position:relative; margin: 0 0 4px; height:34px; }
+.text-size-ticks { position:absolute; inset:12px 12px auto; display:flex; justify-content:space-between; pointer-events:none; }
+.text-size-ticks span { width:2px; height:10px; background:var(--border-strong); }
+.text-size-ticks .default-tick { background:var(--accent); }
+#sidebar-text-size { appearance:none; -webkit-appearance:none; position:absolute; inset:0; margin:0; width:100%; height:34px; background:transparent; cursor:pointer; }
+#sidebar-text-size::-webkit-slider-runnable-track { height:3px; background:linear-gradient(to right,var(--accent) var(--range-progress),var(--border-strong) var(--range-progress)); border-radius:3px; }
+#sidebar-text-size::-webkit-slider-thumb { appearance:none; -webkit-appearance:none; width:24px; height:24px; margin-top:-10px; background:var(--bg-elevated); border:2px solid var(--accent); border-radius:50%; box-shadow:0 2px 5px var(--shadow); }
+#sidebar-text-size:focus-visible { outline:2px solid var(--accent); outline-offset:2px; border-radius:6px; }
+.text-size-endpoints { padding:0 10px; font-size:11px; }
+.text-size-settings output { display:block; text-align:center; font-size:12px; color:var(--text-secondary); margin-top:8px; }
+.writing-card { max-width:100%; min-width:0; background:var(--bg-muted); border:1px solid var(--border-strong); border-radius:14px; margin:12px 0; overflow:hidden; }
+.writing-title { color:var(--text-muted); font-size:.85em; padding:12px 14px 8px; }
+.writing-content { padding:4px 14px 14px; }
+.writing-content > :first-child { margin-top:0; }
+.writing-content > :last-child { margin-bottom:0; }
+
+
 :host {
   all: initial;
   --bg: #f7f7f5;
@@ -174,7 +228,7 @@ const STYLES = `
   background: var(--bg);
   color: var(--text);
   font-family: ${FONT_STACK};
-  font-size: 13.5px;
+  font-size: var(--reply-text-size, 15px);
   line-height: 1.55;
   border-left: 1px solid var(--border);
   box-shadow: -4px 0 24px var(--shadow);
@@ -391,7 +445,7 @@ const STYLES = `
   padding-top: 10px;
   border-top: 1px solid var(--border);
   color: var(--text-secondary);
-  font-size: 13px;
+  font-size: 0.95em;
 }
 .summary-title { font-weight: 600; margin: 0 0 6px; }
 .reply-summary ul { margin: 0; padding-left: 18px; }
@@ -487,7 +541,7 @@ const STYLES = `
 }
 .body code {
   font-family: ${MONO_STACK};
-  font-size: 12px;
+  font-size: 0.9em;
   background: var(--code-inline-bg);
   border-radius: 4px;
   padding: 1px 4px;
@@ -526,9 +580,11 @@ const STYLES = `
   background: none;
   padding: 0;
   color: #f2f2f2;
-  font-size: 12px;
+  font-size: 0.9em;
   line-height: 1.5;
   white-space: pre;
+  overflow-wrap: normal;
+  word-break: normal;
 }
 .msg.streaming .body > p:last-child::after,
 .msg.streaming .body > ul:last-child li:last-child::after,
@@ -765,6 +821,8 @@ const STYLES = `
 function previewText(text: string): string {
   return text
     .replace(/```[\s\S]*?(```|$)/g, " [code] ")
+    .replace(/^ {0,3}:::writing[^\n]*(?:\n|$)/gm, "")
+    .replace(/^ {0,3}:::[ \t]*$/gm, "")
     .replace(/[`*#>_]/g, "")
     .replace(/\s+/g, " ")
     .trim()
@@ -781,6 +839,12 @@ export class Sidebar {
   /** Thread shown in the full-height chat view; null shows the list. */
   private openId: string | null = null;
   /** Unsent composer text per thread, so re-renders don't wipe it. */
+  private imageDrafts = new Map<string, ImageAttachment[]>();
+  private readingImages = false;
+  private textSize: number = DEFAULT_TEXT_SIZE;
+  private textSizeError = "";
+  private textSizeSaving = 0;
+  private textSizeSave: Promise<void> = Promise.resolve();
   private drafts = new Map<string, string>();
   /** Thread ids currently waiting on a reply. */
   private sending = new Set<string>();
@@ -854,6 +918,8 @@ export class Sidebar {
       this.shadow.addEventListener(type, (event) => event.stopPropagation());
     }
     this.renderShell();
+    void loadTextSize().then(size => this.setTextSize(size));
+    chrome.storage?.onChanged?.addListener(this.onTextSizeChanged);
     this.applyAppearanceVars();
     this.applyLayout();
 
@@ -881,6 +947,8 @@ export class Sidebar {
   }
 
   destroy(): void {
+    chrome.storage?.onChanged?.removeListener(this.onTextSizeChanged);
+
     this.cancelComposerFocus();
     window.removeEventListener("pointerdown", this.cancelComposerFocus, true);
     this.dismissDeleteConfirmation?.();
@@ -898,6 +966,7 @@ export class Sidebar {
       appearance: this.appearance,
       answerLength: this.answerLength,
       summaryEnabled: this.summaryEnabled,
+      textSize: this.textSize,
       hostParent: this.host.parentElement?.tagName.toLowerCase() ?? null,
       panelRect: this.panel.getBoundingClientRect().toJSON(),
       ...this.dock.describe(),
@@ -954,6 +1023,9 @@ export class Sidebar {
 
   setThreads(threads: Thread[]): void {
     this.threads = threads;
+    for (const id of this.imageDrafts.keys()) {
+      if (!threads.some(thread => thread.id === id) && !this.sending.has(id)) this.imageDrafts.delete(id);
+    }
     if (this.openId && !threads.some((t) => t.id === this.openId)) {
       this.openId = null;
     }
@@ -1076,6 +1148,7 @@ export class Sidebar {
     if (!thread || thread.replies.length > 0) return;
 
     this.drafts.delete(id);
+    this.imageDrafts.delete(id);
     this.errors.delete(id);
     this.partials.delete(id);
     this.sendStarted.delete(id);
@@ -1336,6 +1409,48 @@ export class Sidebar {
     const body = document.createElement("div");
     body.className = "settings";
 
+    const sizeSection = document.createElement("section"); sizeSection.className = "settings-section text-size-settings";
+    const label = document.createElement("label"); label.textContent = "Text size"; label.htmlFor = "sidebar-text-size"; label.className = "settings-label";
+    const scale = document.createElement("div"); scale.className = "text-size-scale";
+    setHtml(scale, '<span>A</span><span>A</span><span>A</span>'); scale.setAttribute("aria-hidden", "true");
+    const track = document.createElement("div"); track.className = "text-size-track";
+    const sizes = document.createElement("input"); sizes.type = "range"; sizes.id = "sidebar-text-size";
+    sizes.min = "0"; sizes.max = "6"; sizes.step = "1";
+    sizes.value = String(this.textSize - TEXT_SIZE_OPTIONS[0]);
+    const ticks = document.createElement("div"); ticks.className = "text-size-ticks"; ticks.setAttribute("aria-hidden", "true");
+    for (const size of TEXT_SIZE_OPTIONS) {
+      const tick = document.createElement("span"); if (size === DEFAULT_TEXT_SIZE) tick.className = "default-tick";
+      ticks.appendChild(tick);
+    }
+    const output = document.createElement("output"); output.htmlFor = sizes.id;
+    const sync = () => {
+      const value = TEXT_SIZE_OPTIONS[Number(sizes.value)];
+      output.textContent = `${value} px${value === DEFAULT_TEXT_SIZE ? " · Default" : ""}`;
+      sizes.setAttribute("aria-valuetext", output.textContent);
+      sizes.style.setProperty("--range-progress", `${Number(sizes.value) / 6 * 100}%`);
+    };
+    sync();
+    sizes.addEventListener("input", () => { sync(); this.setTextSize(TEXT_SIZE_OPTIONS[Number(sizes.value)], false); });
+    sizes.addEventListener("change", () => {
+      const next = TEXT_SIZE_OPTIONS[Number(sizes.value)];
+      this.setTextSize(next, false); sync();
+      this.textSizeSaving++;
+      this.textSizeSave = this.textSizeSave.catch(() => {}).then(() => saveTextSize(next));
+      void this.textSizeSave.then(() => { this.textSizeError = ""; }, () => {
+        this.textSizeError = "Could not save text size. Try again.";
+      }).finally(() => {
+        this.textSizeSaving--;
+        sizeStatus.textContent = this.textSizeError || "Applies immediately. Saved automatically.";
+      });
+    });
+    const endpoints = document.createElement("div"); endpoints.className = "text-size-endpoints";
+    setHtml(endpoints, '<span>Smaller</span><span>Default</span><span>Larger</span>'); endpoints.setAttribute("aria-hidden", "true");
+    const sample = document.createElement("p"); sample.className = "text-size-preview";
+    sample.textContent = "A comfortable size for your sidebar replies.";
+    const sizeStatus = document.createElement("p"); sizeStatus.className = "settings-hint"; sizeStatus.setAttribute("role", "status");
+    sizeStatus.textContent = this.textSizeError || "Applies immediately. Saved automatically.";
+    track.append(ticks, sizes);
+    sizeSection.append(label, scale, track, endpoints, output, sample, sizeStatus);
     const answers = document.createElement("section");
     answers.className = "settings-section";
     setHtml(answers,
@@ -1414,7 +1529,7 @@ export class Sidebar {
     const appearanceHeading = document.createElement("h2");
     appearanceHeading.className = "settings-heading";
     appearanceHeading.textContent = "Appearance";
-    body.appendChild(appearanceHeading);
+    body.append(appearanceHeading, sizeSection);
 
     const colorSection = document.createElement("div");
     colorSection.className = "settings-section";
@@ -1686,6 +1801,12 @@ export class Sidebar {
         }
       } else {
         div.textContent = r.text;
+        for (const image of r.images || []) {
+          // Only previews created by our canvas encoder; never host-provided URLs.
+          if (!/^data:image\/jpeg;base64,[A-Za-z0-9+/=]+$/.test(image.previewDataUrl)) continue;
+          const picture = document.createElement("img"); picture.className = "sent-picture";
+          picture.src = image.previewDataUrl; picture.alt = image.name; div.appendChild(picture);
+        }
       }
       messages.appendChild(div);
     }
@@ -1695,10 +1816,35 @@ export class Sidebar {
     return view;
   }
 
+  private readonly onTextSizeChanged = (changes: Record<string, chrome.storage.StorageChange>, area: string) => {
+    if (area === "local" && !this.textSizeSaving && changes[TEXT_SIZE_KEY]) this.setTextSize(changes[TEXT_SIZE_KEY].newValue);
+  };
+  setTextSize(size: unknown, rerender = true): void {
+    this.textSize = normalizeTextSize(size);
+    this.host.style.setProperty("--reply-text-size", `${this.textSize}px`);
+    if (rerender && this.settingsOpen) this.render();
+  }
+  private async addPictures(threadId: string, files: File[]): Promise<void> {
+    if (this.readingImages || this.sending.has(threadId)) return;
+    const existing = this.imageDrafts.get(threadId) || [];
+    if (existing.length + files.length > MAX_IMAGES) {
+      this.errors.set(threadId, `Attach up to ${MAX_IMAGES} pictures per message.`); this.render(); return;
+    }
+    this.readingImages = true;
+    this.errors.delete(threadId);
+    this.render();
+    try {
+      const images = await Promise.all(files.map(prepareImage));
+      if (this.threads.some(t => t.id === threadId)) this.imageDrafts.set(threadId, [...existing, ...images]);
+    } catch (err) { this.errors.set(threadId, err instanceof Error ? err.message : String(err)); }
+    finally { this.readingImages = false; this.render(); this.focusComposer(); }
+  }
+
   private buildFooter(thread: Thread): HTMLElement {
     const footer = document.createElement("div");
     footer.className = "footer";
     const isSending = this.sending.has(thread.id);
+    const images = this.imageDrafts.get(thread.id) || [];
 
     const status = document.createElement("div");
     status.className = "status";
@@ -1709,27 +1855,51 @@ export class Sidebar {
       status.classList.add("waiting");
       status.textContent = "Waiting for a reply…";
     } else {
-      status.textContent = error ?? "";
+      status.textContent = this.readingImages ? "Preparing pictures…" : error ?? "";
     }
 
+    const previews = document.createElement("div");
+    previews.className = "image-previews";
+    for (const image of images) {
+      const item = document.createElement("div"); item.className = "image-preview";
+      const picture = document.createElement("img"); picture.src = image.previewDataUrl; picture.alt = image.name;
+      const remove = document.createElement("button"); remove.type = "button";
+      remove.textContent = "×"; remove.setAttribute("aria-label", `Remove ${image.name}`); remove.disabled = isSending;
+      remove.addEventListener("click", () => {
+        this.imageDrafts.set(thread.id, images.filter(i => i.id !== image.id)); this.render(); this.focusComposer();
+      });
+      item.append(picture, remove); previews.appendChild(item);
+    }
+    const picker = document.createElement("input"); picker.type = "file"; picker.accept = "image/png,image/jpeg,image/webp,image/gif"; picker.multiple = true; picker.hidden = true;
+    picker.addEventListener("change", () => { void this.addPictures(thread.id, Array.from(picker.files || [])); });
+    const attach = document.createElement("button"); attach.type = "button"; attach.className = "attach-picture";
+    attach.textContent = "+"; attach.title = "Attach pictures"; attach.setAttribute("aria-label", "Attach pictures");
+    attach.disabled = isSending || this.readingImages || images.length >= MAX_IMAGES;
+    attach.addEventListener("click", () => picker.click());
     const composer = document.createElement("div");
     composer.className = "composer";
+    composer.addEventListener("dragover", e => { e.preventDefault(); e.stopPropagation(); });
+    composer.addEventListener("drop", e => { e.preventDefault(); e.stopPropagation(); void this.addPictures(thread.id, Array.from(e.dataTransfer?.files || [])); });
     const input = document.createElement("textarea");
     input.rows = 1;
     input.placeholder = "Ask about this snippet…";
     input.setAttribute("aria-label", "Ask about this snippet");
     input.readOnly = isSending;
+    input.addEventListener("paste", e => {
+      const pictures = Array.from(e.clipboardData?.files || []).filter(file => file.type.startsWith("image/"));
+      if (pictures.length) { e.preventDefault(); e.stopPropagation(); void this.addPictures(thread.id, pictures); }
+    });
     input.value = this.drafts.get(thread.id) ?? "";
 
     const send = document.createElement("button");
     send.type = "button";
     send.className = "send";
-    send.disabled = isSending;
+    send.disabled = isSending || this.readingImages;
     send.title = isSending ? "Waiting for a reply" : "Send";
     send.setAttribute("aria-label", send.title);
     setHtml(send, isSending ? `<span class="spinner"></span>` : SEND_ICON);
     const syncIdle = () => {
-      send.classList.toggle("idle", !isSending && !input.value.trim());
+      send.classList.toggle("idle", !isSending && !input.value.trim() && !images.length);
     };
     syncIdle();
 
@@ -1749,13 +1919,14 @@ export class Sidebar {
     if (input.value) requestAnimationFrame(autoGrow);
 
     const doSend = async () => {
-      const question = input.value.trim();
-      if (!question || this.sending.has(thread.id)) return;
+      const question = input.value.trim() || (images.length ? "Please explain this picture." : "");
+      if (!question || this.readingImages || this.sending.has(thread.id)) return;
       this.sending.add(thread.id);
       this.sendStarted.set(thread.id, Date.now());
       this.errors.delete(thread.id);
       // Clear the composer while waiting so the draft isn't stuck on screen.
       this.drafts.delete(thread.id);
+      this.imageDrafts.delete(thread.id);
       this.partials.set(thread.id, "");
       this.render();
       const messages = this.messagesFor(thread.id);
@@ -1766,7 +1937,7 @@ export class Sidebar {
       );
       try {
         const result = await this.callbacks.onSend(thread, question, (text) =>
-          smoother.push(text)
+          smoother.push(text), images
         );
         if (result.ok) {
           if (result.reply) smoother.push(result.reply);
@@ -1775,6 +1946,7 @@ export class Sidebar {
           this.errors.set(thread.id, result.error || "Request failed");
           // Restore the draft so a failed send isn't lost.
           this.drafts.set(thread.id, question);
+          this.imageDrafts.set(thread.id, images);
         }
       } catch (err) {
         this.errors.set(
@@ -1782,6 +1954,7 @@ export class Sidebar {
           err instanceof Error ? err.message : String(err)
         );
         this.drafts.set(thread.id, question);
+        this.imageDrafts.set(thread.id, images);
       } finally {
         smoother.cancel();
         this.sending.delete(thread.id);
@@ -1806,9 +1979,11 @@ export class Sidebar {
       onKeyDown((event as CustomEvent<KeyboardEvent>).detail);
     });
 
+    composer.append(attach, picker);
     composer.appendChild(input);
     composer.appendChild(send);
     footer.appendChild(status);
+    footer.appendChild(previews);
     footer.appendChild(composer);
     return footer;
   }

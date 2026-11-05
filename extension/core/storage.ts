@@ -3,6 +3,8 @@ import {
   DEFAULT_UI_APPEARANCE,
   DEFAULT_ANSWER_LENGTH,
   normalizeAnswerLength,
+  normalizeTextSize,
+  DEFAULT_TEXT_SIZE,
   type AnswerLength,
   type HighlightStyle,
   type Thread,
@@ -346,5 +348,23 @@ export async function summarizeStorage(siteId: string): Promise<StorageSummary> 
       log.warn("storage summary failed:", asStorageError(err).message);
       resolve({ bytesInUse: null, conversations: [] });
     }
+  });
+}
+
+export const TEXT_SIZE_KEY = "ui:textSize";
+export async function loadTextSize(): Promise<number> {
+  if (!isExtensionAlive()) return DEFAULT_TEXT_SIZE;
+  return new Promise(resolve => {
+    try { chrome.storage.local.get([TEXT_SIZE_KEY], result => resolve(chrome.runtime.lastError ? DEFAULT_TEXT_SIZE : normalizeTextSize(result[TEXT_SIZE_KEY]))); }
+    catch { resolve(DEFAULT_TEXT_SIZE); }
+  });
+}
+export async function saveTextSize(size: number): Promise<void> {
+  if (!isExtensionAlive()) throw new Error(EXTENSION_RELOAD_MSG);
+  return new Promise((resolve, reject) => {
+    try { chrome.storage.local.set({ [TEXT_SIZE_KEY]: normalizeTextSize(size) }, () => {
+      if (chrome.runtime.lastError) reject(asStorageError(new Error(chrome.runtime.lastError.message)));
+      else resolve();
+    }); } catch (err) { reject(asStorageError(err)); }
   });
 }
