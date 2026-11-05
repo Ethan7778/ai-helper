@@ -1,21 +1,17 @@
+import { renderMarkdown } from "./markdown";
 /**
  * Strip ChatGPT private-use citation / entity / media tokens into readable text.
  * Example: entity["people","Fred DeLuca","…"] → Fred DeLuca
  */
-import katex from "katex";
-
 export function cleanChatGptText(text: string): string {
   return splitFences(text.replace(/\r\n?/g, "\n"))
     .map(seg => seg.code ? seg.raw : seg.raw.split(/(`+[^`\n]*`+)/g)
       .map(part => part.startsWith("`") ? part : cleanProse(part)).join(""))
-    .join("").trim();
+    .join("").replace(/^\n+|\n+$/g, "");
 }
 
 function cleanProse(text: string): string {
-  if (!text) return "";
-
   let out = text;
-
   // entity → prefer display name (index 1)
   out = out.replace(
     /\uE200entity\uE202(\[[\s\S]*?\])\uE201/g,
@@ -43,20 +39,7 @@ function cleanProse(text: string): string {
   // Any leftover Private Use Area glyphs
   out = out.replace(/[\uE000-\uF8FF]/g, "");
 
-  // Collapse odd spaces left by removals, keep intentional newlines.
-  // Code fences keep their whitespace so indentation survives.
-  out = splitFences(out)
-    .map((seg) =>
-      seg.code
-        ? seg.raw
-        : seg.raw
-            .replace(/[^\S\n]+/g, " ")
-            .replace(/ *\n */g, "\n")
-            .replace(/\n{3,}/g, "\n\n")
-    )
-    .join("");
-
-  return out;
+  return out.replace(/\n{3,}/g, "\n\n");
 }
 
 /**
@@ -143,145 +126,26 @@ interface Segment {
 /** Split on ``` fences; an unclosed trailing fence (mid-stream) counts as code. */
 function splitFences(text: string): Segment[] {
   const segments: Segment[] = [];
-  const re = /^ {0,3}(`{3,}|~{3,})[^\n]*(?:\n|$)/gm;
-  let last = 0;
-  for (let m = re.exec(text); m; m = re.exec(text)) {
-    if (m.index > last) segments.push({ raw: text.slice(last, m.index), code: false });
-    const close = new RegExp(`^ {0,3}${m[1]![0]}{${m[1]!.length},}[ \\t]*(?=\\n|$)`, "gm");
-    close.lastIndex = re.lastIndex;
-    const end = close.exec(text);
-    last = end ? end.index + end[0].length : text.length;
-    segments.push({ raw: text.slice(m.index, last), code: true });
-    re.lastIndex = last;
+  let prose = "", code = "", fence = "";
+  for (const line of text.split(/(?<=\n)/)) {
+    const open = /^ {0,3}(`{3,}|~{3,})/.exec(line);
+    if (!fence && open) {
+      if (prose) segments.push({ raw: prose, code: false });
+      prose = ""; fence = open[1]; code = line;
+    } else if (fence) {
+      code += line;
+      if (new RegExp("^ {0,3}" + (fence[0] === "`" ? "`" : "~") + "{" + fence.length + ",}\\s*$").test(line)) {
+        segments.push({ raw: code, code: true }); code = ""; fence = "";
+      }
+    } else prose += line;
   }
-  if (last < text.length) segments.push({ raw: text.slice(last), code: false });
+  if (code) segments.push({ raw: code, code: true });
+  if (prose) segments.push({ raw: prose, code: false });
   return segments;
 }
 
-/** Inline markdown on already-escaped text: `code`, **bold**, *italic*. */
-function formatInline(escaped: string): string {
-  const codes: string[] = [];
-  let html = escaped.replace(/`([^`\n]+)`/g, (_m, code: string) => {
-    codes.push(`<code>${code}</code>`);
-    return `\u0000${codes.length - 1}\u0000`;
-  });
-  html = html.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
-  html = html.replace(/(^|[^*])\*(?!\*)(.+?)\*(?!\*)/g, "$1<em>$2</em>");
-  // Drop any stray ** that never closed (common mid-stream)
-  html = html.replace(/\*\*/g, "");
-  return html.replace(/\u0000(\d+)\u0000/g, (_m, i: string) => codes[Number(i)] ?? "");
-}
-
-function formatCodeBlock(raw: string): string {
-  const firstNl = raw.indexOf("\n");
-  const fence = /^ {0,3}(`{3,}|~{3,})/.exec(raw)!;
-  const lang = (firstNl < 0 ? raw.slice(fence[0].length) : raw.slice(fence[0].length, firstNl)).trim();
-  let body = firstNl < 0 ? "" : raw.slice(firstNl + 1);
-  body = body.replace(new RegExp(`(?:^|\\n) {0,3}${fence[1]![0]}{${fence[1]!.length},}[ \\t]*$`), "");
-  const label = lang ? `<div class="code-lang">${escapeHtml(lang)}</div>` : "";
-  return `<div class="code-block">${label}<pre><code>${escapeHtml(body)}</code></pre></div>`;
-}
-
-type ListKind = "ul" | "ol";
-
-function formatProse(text: string): string {
-  const out: string[] = [];
-  let para: string[] = [];
-  let list: { kind: ListKind; items: string[] } | null = null;
-  let quote: string[] = [];
-
-  const flushPara = () => {
-    if (para.length) out.push(`<p>${para.join("<br>")}</p>`);
-    para = [];
-  };
-  const flushList = () => {
-    if (list) {
-      const items = list.items.map((li) => `<li>${li}</li>`).join("");
-      out.push(`<${list.kind}>${items}</${list.kind}>`);
-    }
-    list = null;
-  };
-  const flushQuote = () => {
-    if (quote.length) out.push(`<blockquote>${quote.join("<br>")}</blockquote>`);
-    quote = [];
-  };
-  const flushAll = () => {
-    flushPara();
-    flushList();
-    flushQuote();
-  };
-
-  for (const rawLine of text.split("\n")) {
-    const line = rawLine.trimEnd();
-    if (!line.trim()) {
-      flushAll();
-      continue;
-    }
-    const heading = /^\s*#{1,6}\s+(.*)$/.exec(line);
-    if (heading) {
-      flushAll();
-      out.push(`<p class="h">${formatInline(escapeHtml(heading[1]!))}</p>`);
-      continue;
-    }
-    const q = /^\s*>\s?(.*)$/.exec(line);
-    if (q) {
-      flushPara();
-      flushList();
-      quote.push(formatInline(escapeHtml(q[1]!)));
-      continue;
-    }
-    flushQuote();
-    const bullet = /^\s*[-*+]\s+(.*)$/.exec(line);
-    const numbered = /^\s*\d+[.)]\s+(.*)$/.exec(line);
-    if (bullet || numbered) {
-      const kind: ListKind = bullet ? "ul" : "ol";
-      flushPara();
-      if (list && list.kind !== kind) flushList();
-      if (!list) list = { kind, items: [] };
-      list.items.push(formatInline(escapeHtml((bullet ?? numbered)![1]!)));
-      continue;
-    }
-    if (list) {
-      flushList();
-    }
-    para.push(formatInline(escapeHtml(line.trim())));
-  }
-  flushAll();
-  return out.join("");
-}
-
-/**
- * Escape HTML then apply a small markdown subset for sidebar display:
- * paragraphs, headings, quotes, lists, code fences, inline code, bold, italic.
- */
 export function formatReplyHtml(text: string): string {
   // A streaming cut can land inside a ChatGPT citation token; hide the tail.
   const cleaned = cleanChatGptText(text.replace(/\uE200[^\uE201]*$/, ""));
-  return splitFences(cleaned)
-    .map((seg) => (seg.code ? formatCodeBlock(seg.raw) : formatMathProse(seg.raw)))
-    .join("");
-}
-
-function formatMathProse(text: string): string {
-  const math: string[] = [];
-  // Protect code spans first; TeX must never be interpreted inside code.
-  const protectedText = text.replace(/(`+)[^`\n]*?\1|\\\[([\s\S]*?)\\\]|\\\(([\s\S]*?)\\\)|\$\$([\s\S]*?)\$\$|(?<![\\\w$])\$(?!\s)([^$\n]+?)(?<!\s)\$(?!\d)/g,
-    (raw, code, display, inline, dollars, single) => {
-      if (code) return raw;
-      const block = display !== undefined || dollars !== undefined;
-      const html = katex.renderToString(display ?? inline ?? dollars ?? single, {
-        output: "mathml", displayMode: block, throwOnError: false, trust: false,
-      });
-      math.push(`<span class="${block ? "math-display" : "math-inline"}">${html}</span>`);
-      return `\u0001${math.length - 1}\u0001`;
-    });
-  return formatProse(protectedText).replace(/\u0001(\d+)\u0001/g, (_, i) => math[Number(i)] ?? "");
-}
-
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
+  return renderMarkdown(cleaned);
 }

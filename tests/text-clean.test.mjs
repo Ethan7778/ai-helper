@@ -1,3 +1,6 @@
+import { JSDOM } from "jsdom";
+const dom = new JSDOM("");
+globalThis.window = dom.window;
 import { createRequire } from "module";
 import { buildSync } from "esbuild";
 import { mkdtempSync, writeFileSync, rmSync } from "fs";
@@ -16,9 +19,11 @@ buildSync({
   platform: "neutral",
 });
 
-const { cleanChatGptText, formatReplyHtml } = await import(
+const { cleanChatGptText, formatReplyHtml: renderHtml } = await import(
   pathToFileURL(outfile).href
 );
+
+const formatReplyHtml = text => renderHtml(text).replace(/<\/?span[^>]*>/g, "").replace(/>\s+</g, "><");
 
 function assert(cond, msg) {
   if (!cond) throw new Error(msg);
@@ -81,5 +86,6 @@ assert(!formatReplyHtml('Costs $5 or $10.').includes('<math'), 'currency rendere
 assert(!formatReplyHtml(String.raw`\(\href{javascript:alert(1)}{x}\)`).includes('href="javascript:'), 'unsafe math link');
 assert(formatReplyHtml('<script>alert(1)</script>').includes('&lt;script&gt;'), 'HTML was not escaped');
 
+dom.window.close();
 rmSync(dir, { recursive: true, force: true });
 console.log("ok — text-clean strips image_group widgets and markdown noise");

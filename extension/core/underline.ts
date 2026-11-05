@@ -2,7 +2,7 @@
 const SVG_NS = "http://www.w3.org/2000/svg";
 let requestLayout: (() => void) | undefined;
 
-const EDITOR_SELECTOR = 'textarea,[role="textbox"],[contenteditable="true"],[contenteditable="plaintext-only"],dialog[open],[role="dialog"],[aria-modal="true"]';
+const EDITOR_SELECTOR = 'textarea,[role="textbox"],[contenteditable="true"],[contenteditable="plaintext-only"],dialog[open],[role="dialog"],[aria-modal="true"],#thread-bottom-container,[data-testid="composer-background"],header,[role="banner"]';
 const MARK_SELECTOR = 'mark[data-thread-id][data-ai-helper-underline]';
 
 /** Find the editor's painted panel, stopping before the conversation itself. */
@@ -39,7 +39,11 @@ function visiblePanelRects(editors: HTMLElement[]): { x: number; y: number; widt
     const r = panel.getBoundingClientRect();
     const x = Math.max(0, r.left), y = Math.max(0, r.top);
     const width = Math.min(innerWidth, r.right) - x, height = Math.min(innerHeight, r.bottom) - y;
-    return width > 0 && height > 0 ? [{ x, y, width, height }] : [];
+    // Include the composer's outer gutter and space below a floating bottom
+    // editor. Text there is visually behind the input even outside its border.
+    const anchored = r.top > innerHeight / 2 && Array.from(panel.querySelectorAll('textarea,[contenteditable="true"],[role="textbox"]')).length > 0;
+    const padding = 8;
+    return width > 0 && height > 0 ? [{ x: Math.max(0, x - padding), y: Math.max(0, y - padding), width: Math.min(innerWidth, x + width + padding) - Math.max(0, x - padding), height: (anchored ? innerHeight : Math.min(innerHeight, y + height + padding)) - Math.max(0, y - padding) }] : [];
   });
 }
 
@@ -59,6 +63,7 @@ export function installUnderlineLayer(): () => void {
   let clippingParents = new WeakMap<HTMLElement, { element: HTMLElement; x: boolean; y: boolean }[]>();
   const maskId = `ai-helper-underline-mask-${Math.random().toString(36).slice(2)}`;
   let previousGeometry = "";
+  let revision = 0;
   const render = () => {
     frame = 0;
     if (disposed || document.hidden) return;
@@ -73,6 +78,8 @@ export function installUnderlineLayer(): () => void {
     const threads = new Map<string, { color: string; width: number; rects: DOMRect[] }>();
     const ancestorRects = new Map<HTMLElement, DOMRect>();
     for (const mark of marks) {
+      const markStyle = getComputedStyle(mark);
+      if (markStyle.visibility === "hidden" || markStyle.visibility === "collapse" || markStyle.opacity === "0") continue;
       const id = mark.dataset.threadId!;
       let group = threads.get(id);
       if (!group) {
@@ -110,7 +117,7 @@ export function installUnderlineLayer(): () => void {
         }
       }
     }
-    const geometry: { id: string; left: number; right: number; y: number; color: string; width: number }[] = [];
+    const geometry: { id: string; left: number; right: number; y: number; probeY: number; color: string; width: number }[] = [];
     for (const [id, group] of threads) {
       const rows: { top: number; bottom: number; rects: DOMRect[] }[] = [];
       for (const rect of group.rects.sort((a, b) => a.top - b.top || a.left - b.left)) {
@@ -128,15 +135,34 @@ export function installUnderlineLayer(): () => void {
           else spans.push({ left: rect.left, right: rect.right });
         }
         for (const span of spans) {
-          geometry.push({ id, left: span.left, right: span.right, y: Math.round(row.bottom) + 1, color: group.color, width: group.width });
+          geometry.push({ id, left: span.left, right: span.right, y: Math.round(row.bottom) + 1, probeY: (row.top + row.bottom) / 2, color: group.color, width: group.width });
         }
       }
     }
     const panels = visiblePanelRects(editors);
-    const signature = JSON.stringify([geometry, panels, innerWidth, innerHeight]);
+    const signature = JSON.stringify([geometry, panels, innerWidth, innerHeight, revision]);
     if (signature !== previousGeometry) {
       previousGeometry = signature;
-      const lines = geometry.map(item => {
+      // The overlay sits above the site, so overflow clipping alone cannot
+      // hide it behind headers/composers. Hit-test the actual text and split
+      // each underline into visible runs, including partial horizontal cover.
+      const visible = geometry.flatMap(item => {
+        const runs: typeof geometry = [];
+        let start: number | null = null;
+        const owned = (x: number, y: number) => {
+          const hit = document.elementFromPoint(x, y);
+          return !!hit && marks.some(mark => mark.dataset.threadId === item.id && (mark === hit || mark.contains(hit) || hit.contains(mark)));
+        };
+        for (let x = item.left; x < item.right; x += 6) {
+          const end = Math.min(x + 6, item.right), center = (x + end) / 2;
+          const allowed = owned(center, item.probeY) && owned(center, item.y);
+          if (allowed && start === null) start = x;
+          if (!allowed && start !== null) { runs.push({ ...item, left: start, right: x }); start = null; }
+        }
+        if (start !== null) runs.push({ ...item, left: start });
+        return runs;
+      });
+      const lines = visible.map(item => {
         const line = document.createElementNS(SVG_NS, "line");
         line.dataset.threadId = item.id;
         line.setAttribute("x1", String(item.left)); line.setAttribute("x2", String(item.right));
@@ -176,7 +202,7 @@ export function installUnderlineLayer(): () => void {
   const schedule = () => {
     if (!frame && !disposed && !document.hidden) frame = requestAnimationFrame(render);
   };
-  requestLayout = () => { marksDirty = true; schedule(); };
+  requestLayout = () => { marksDirty = true; revision++; schedule(); };
   const currentRequest = requestLayout;
   const mutations = new MutationObserver(records => {
     const relevant = records.filter(record => {
@@ -189,6 +215,7 @@ export function installUnderlineLayer(): () => void {
     });
     if (!relevant.length) return;
     marksDirty = true;
+    revision++;
     schedule();
   });
   mutations.observe(document.documentElement, {

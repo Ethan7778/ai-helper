@@ -297,7 +297,7 @@ export async function bootEngine(adapter: SiteAdapter): Promise<() => void> {
         );
       }
     },
-    onSend: async (thread, question, onPartial) => {
+    onSend: async (thread, question, onPartial, images) => {
       if (!isExtensionAlive()) {
         markDead();
         return { ok: false, error: EXTENSION_RELOAD_MSG };
@@ -311,7 +311,7 @@ export async function bootEngine(adapter: SiteAdapter): Promise<() => void> {
         ...current,
         replies: [
           ...current.replies,
-          { role: "user", text: question, ts: Date.now() },
+          { role: "user", text: question, images: images?.map(({ id, name, previewDataUrl }) => ({ id, name, previewDataUrl })), ts: Date.now() },
         ],
       };
       try {
@@ -332,6 +332,8 @@ export async function bootEngine(adapter: SiteAdapter): Promise<() => void> {
           surroundingContext: surroundingContext(current),
           conversationExcerpt: conversationExcerpt(),
           question,
+          images,
+          hasPriorImages: current.replies.some(reply => !!reply.images?.length),
           answerLength,
           summaryEnabled: includeSummary,
           messageId: current.messageId,

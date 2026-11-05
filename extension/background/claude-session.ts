@@ -1,3 +1,4 @@
+import { uploadClaudeImages } from "./image-upload";
 /**
  * claude.ai unofficial session client. Runs in the content script so the
  * user's claude.ai cookies are same-origin. Side chats are created as
@@ -85,14 +86,15 @@ async function streamCompletion(
   conversationId: string,
   prompt: string,
   parentMessageUuid: string | undefined,
-  onPartial?: (text: string) => void
+  onPartial?: (text: string) => void,
+  files: string[] = []
 ): Promise<{ reply: string; assistantUuid?: string }> {
   const body: Record<string, unknown> = {
     prompt,
     timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
     locale: navigator.language || "en-US",
     attachments: [],
-    files: [],
+    files,
     rendering_mode: "messages",
   };
   if (parentMessageUuid) body.parent_message_uuid = parentMessageUuid;
@@ -134,7 +136,11 @@ export async function completeViaClaudeSession(
   onPartial?: (text: string) => void
 ): Promise<AskFollowUpResponse> {
   try {
+    if (req.hasPriorImages && (!req.sideConversationId || !req.sideParentMessageId) && !req.images?.length) {
+      throw new Error("This side chat lost access to its earlier pictures. Start a new thread and attach them again.");
+    }
     const orgId = req.sideMeta?.orgId || (await getOrgId());
+    const files = req.images?.length ? await uploadClaudeImages(req.images, orgId) : [];
     const promptArgs = {
       quotedText: req.quotedText,
       surroundingContext: req.surroundingContext,
@@ -152,7 +158,7 @@ export async function completeViaClaudeSession(
           req.sideConversationId,
           buildFollowUpPrompt(promptArgs),
           req.sideParentMessageId,
-          onPartial
+          onPartial, files
         );
         return {
           ok: true,
@@ -166,6 +172,7 @@ export async function completeViaClaudeSession(
         if (err instanceof ClaudeHttpError && [401, 403, 429].includes(err.status)) {
           throw err;
         }
+        if (req.hasPriorImages && !req.images?.length) throw new Error("This side chat expired. Start a new thread and attach the pictures again.");
         log.debug("Could not continue side chat; starting a fresh one", err);
       }
     }
@@ -176,7 +183,7 @@ export async function completeViaClaudeSession(
       conversationId,
       buildFollowUpPrompt({ ...promptArgs, priorTurns: req.priorTurns }),
       undefined,
-      onPartial
+      onPartial, files
     );
     return {
       ok: true,

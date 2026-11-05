@@ -33,6 +33,7 @@ jobs:
           npm run test:sse
           npm run test:chatgpt-stream
           npm run test:streams
+          npm run test:updates
           node tests/text-clean.test.mjs
           node tests/store-publish.test.mjs
       - run: npm run build

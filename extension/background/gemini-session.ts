@@ -1,3 +1,4 @@
+import { uploadGeminiImages } from "./image-upload";
 /**
  * gemini.google.com unofficial session client. Runs in the content script so
  * Google cookies are same-origin. Every request sets Gemini's temporary-chat
@@ -55,6 +56,7 @@ interface PageTokens {
   sid: string;
   /** Multi-account prefix such as "/u/1", or "". */
   prefix: string;
+  pushId: string;
 }
 
 function pickToken(source: string, key: string): string {
@@ -77,6 +79,7 @@ function tokensFrom(source: string, prefix: string): PageTokens | null {
     bl,
     sid: pickToken(source, "FdrFJe"),
     prefix,
+    pushId: pickToken(source, "qKIAYe") || "feeds/mcudyrk2a4khkz",
   };
 }
 
@@ -103,7 +106,8 @@ type Continuation = [string, string, string] | [string, string];
 async function streamGenerate(
   prompt: string,
   continuation: Continuation | null,
-  onPartial?: (text: string) => void
+  onPartial?: (text: string) => void,
+  files: unknown[] = []
 ): Promise<{
   reply: string;
   conversationId?: string;
@@ -117,7 +121,7 @@ async function streamGenerate(
       prompt,
       continuation,
       controller.signal,
-      onPartial
+      onPartial, files
     );
   } catch (err) {
     if (controller.signal.aborted) {
@@ -135,7 +139,8 @@ async function streamGenerateWithSignal(
   prompt: string,
   continuation: Continuation | null,
   signal: AbortSignal,
-  onPartial?: (text: string) => void
+  onPartial?: (text: string) => void,
+  files: unknown[] = []
 ): Promise<{
   reply: string;
   conversationId?: string;
@@ -149,7 +154,7 @@ async function streamGenerateWithSignal(
   for (const [index, value] of Object.entries(UI_FIELDS)) {
     inner[Number(index)] = value;
   }
-  inner[0] = [prompt, 0, null, null, null, null, 0];
+  inner[0] = [prompt, 0, null, files.length ? files : null, null, null, 0];
   inner[1] = [lang];
   if (continuation) inner[2] = continuation;
   inner[TEMPORARY_CHAT_INDEX] = 1;
@@ -225,6 +230,11 @@ export async function completeViaGeminiSession(
   onPartial?: (text: string) => void
 ): Promise<AskFollowUpResponse> {
   try {
+    if (req.hasPriorImages && (!req.sideConversationId || !req.sideParentMessageId) && !req.images?.length) {
+      throw new Error("This side chat lost access to its earlier pictures. Start a new thread and attach them again.");
+    }
+    const tokens = req.images?.length ? await getPageTokens() : null;
+    const files = tokens ? await uploadGeminiImages(req.images!, tokens.pushId) : [];
     const promptArgs = {
       quotedText: req.quotedText,
       surroundingContext: req.surroundingContext,
@@ -249,7 +259,7 @@ export async function completeViaGeminiSession(
         : [req.sideConversationId, req.sideParentMessageId];
       try {
         return toResponse(
-          await streamGenerate(buildFollowUpPrompt(promptArgs), continuation, onPartial)
+          await streamGenerate(buildFollowUpPrompt(promptArgs), continuation, onPartial, files)
         );
       } catch (err) {
         if (
@@ -258,6 +268,7 @@ export async function completeViaGeminiSession(
         ) {
           throw err;
         }
+        if (req.hasPriorImages && !req.images?.length) throw new Error("This side chat expired. Start a new thread and attach the pictures again.");
         log.debug("Could not continue side chat; starting a fresh one", err);
       }
     }
@@ -266,7 +277,7 @@ export async function completeViaGeminiSession(
       await streamGenerate(
         buildFollowUpPrompt({ ...promptArgs, priorTurns: req.priorTurns }),
         null,
-        onPartial
+        onPartial, files
       )
     );
   } catch (err) {

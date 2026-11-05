@@ -5,6 +5,25 @@ export type HighlightStyle = "classic" | "underline";
 export type AnswerLength = "short" | "medium" | "detailed";
 export const DEFAULT_ANSWER_LENGTH: AnswerLength = "short";
 
+export const TEXT_SIZE_OPTIONS = [12, 13, 14, 15, 16, 17, 18] as const;
+export const DEFAULT_TEXT_SIZE = TEXT_SIZE_OPTIONS[3];
+export function normalizeTextSize(raw: unknown): number {
+  return typeof raw === "number" && Number.isFinite(raw)
+    ? Math.min(18, Math.max(12, Math.round(raw))) : DEFAULT_TEXT_SIZE;
+}
+
+/** Original image stays in the unsent draft; only a small preview is stored. */
+export interface ImageAttachment {
+  id: string;
+  name: string;
+  mimeType: string;
+  dataUrl: string;
+  previewDataUrl: string;
+  width: number;
+  height: number;
+}
+export type SavedImage = Pick<ImageAttachment, "id" | "name" | "previewDataUrl">;
+
 export function normalizeAnswerLength(raw: unknown): AnswerLength {
   return raw === "short" || raw === "medium" || raw === "detailed"
     ? raw
@@ -30,6 +49,7 @@ export interface Reply {
   ts: number;
   /** Optional takeaways, generated with a sufficiently long assistant reply. */
   summary?: string[];
+  images?: SavedImage[];
 }
 
 /** A highlight-anchored follow-up thread, persisted by character offsets. */
@@ -85,6 +105,8 @@ export interface AskFollowUpRequest {
   surroundingContext: string;
   conversationExcerpt: string;
   question: string;
+  images?: ImageAttachment[];
+  hasPriorImages?: boolean;
   answerLength?: AnswerLength;
   summaryEnabled?: boolean;
   messageId: string;
